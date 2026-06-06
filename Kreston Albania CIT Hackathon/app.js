@@ -1,0 +1,2651 @@
+/* KrestonFlow AI Pro - Enhanced Demo v3 */
+(() => {
+  const STORE_KEY = 'krestonflow_ai_secure_hierarchy_pro_v5_mvp_stable';
+  const SESSION_KEY = 'krestonflow_ai_secure_hierarchy_session_v5_mvp_stable';
+  const PASS = 'Kreston2026!';
+  const ROLES = ['Intern', 'Assistant', 'Junior', 'Associate', 'Senior', 'Manager', 'Partner', 'Admin'];
+  const STATUS = ['Draft', 'In Progress', 'Submitted', 'Under Review', 'Approved', 'Delivered'];
+  const DEPARTMENTS = ['Audit & Advisory', 'Accounting & Tax', 'Bookkeeping & Payroll', 'Legal Advisory', 'Business Advisory', 'HR', 'Marketing', 'Internal Finance', 'IT'];
+  const BD_STAGES = ['Lead Qualified', 'Discovery Call', 'Proposal Draft', 'Proposal Sent', 'Negotiation', 'Contract Signed', 'Lost'];
+  const DOC_TYPES = ['Audit', 'Tax', 'Payroll', 'Legal', 'Contract', 'Proposal', 'Finance', 'HR', 'Marketing', 'General'];
+  const LEAVE_TYPES = ['Annual Leave', 'Sick Leave', 'Training Day', 'Personal Leave', 'Parental Leave'];
+  const EXPENSE_CATS = ['Travel', 'Office Supplies', 'Software', 'Training', 'Marketing', 'Client Entertainment', 'Equipment', 'Other'];
+
+  const state = {
+    db: null,
+    user: null,
+    route: 'dashboard',
+    selectedClientId: null,
+    selectedEmployeeId: null,
+    filters: { search: '', department: 'All', status: 'All' },
+    modal: null,
+    aiReport: '',
+    aiLoading: false,
+    aiMode: 'local',
+    aiNotice: '',
+    command: '',
+    fingerprintOk: false,
+    notifOpen: false,
+    aiChat: [],
+    aiWidgetOpen: false
+  };
+
+  const $ = (sel) => document.querySelector(sel);
+  const app = $('#app');
+
+  window.addEventListener('error', (event) => {
+    console.error('KrestonFlow UI error:', event.error || event.message);
+    try { toast('A UI error was caught safely. Please continue or refresh.'); } catch (_) {}
+  });
+  window.addEventListener('unhandledrejection', (event) => {
+    console.error('KrestonFlow async error:', event.reason);
+    try { toast('A background action failed safely. The app is still running.'); } catch (_) {}
+  });
+
+  function todayISO(offset = 0) {
+    const d = new Date();
+    d.setDate(d.getDate() + offset);
+    return d.toISOString().slice(0, 10);
+  }
+
+  function fmtDate(iso) {
+    if (!iso) return '—';
+    const d = new Date(iso + 'T00:00:00');
+    return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+  }
+
+  function fmtDateTime(iso) {
+    if (!iso) return '—';
+    const d = new Date(iso);
+    return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) + ' ' +
+      d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+  }
+
+  function uid(prefix) {
+    return `${prefix}_${Math.random().toString(36).slice(2, 8)}_${Date.now().toString(36).slice(-4)}`;
+  }
+
+  function money(n) {
+    return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 }).format(Number(n || 0));
+  }
+
+  function pct(n) { return `${Math.round(Number(n || 0))}%`; }
+
+  function esc(v) {
+    return String(v ?? '').replace(/[&<>'"]/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;' }[c]));
+  }
+
+  function roleLevel(role) { return ROLES.indexOf(role); }
+  function byId(list, id) { return list.find(x => x.id === id); }
+  function userName(id) { const u = byId(state.db.users, id); return u ? u.name : 'Unassigned'; }
+  function clientName(id) { const c = byId(state.db.clients, id); return c ? c.name : 'Internal'; }
+
+  function roleColor(role) {
+    if (role === 'Admin' || role === 'Partner') return 'purple';
+    if (role === 'Manager') return 'blue';
+    if (role === 'Senior') return 'teal';
+    if (role === 'Junior' || role === 'Intern') return 'orange';
+    return 'gray';
+  }
+
+  function riskColor(risk) {
+    const r = String(risk || '').toLowerCase();
+    if (r.includes('high')) return 'red';
+    if (r.includes('medium') || r.includes('med')) return 'orange';
+    if (r.includes('low')) return 'green';
+    return 'gray';
+  }
+
+  function initials(name) {
+    const parts = String(name || '').trim().split(' ');
+    return (parts[0]?.[0] || '') + (parts[1]?.[0] || '');
+  }
+
+  function isExecutive() { return ['Admin', 'Partner'].includes(state.user?.role); }
+  function isManagerLevel() { return isExecutive() || roleLevel(state.user?.role) >= roleLevel('Manager'); }
+  function isSeniorLevel() { return isExecutive() || roleLevel(state.user?.role) >= roleLevel('Senior'); }
+  function isAssociateLevel() { return isExecutive() || roleLevel(state.user?.role) >= roleLevel('Associate'); }
+  function isLowerRole() { return !isAssociateLevel(); }
+  function canSeeCommercialData() { return isManagerLevel() || hasRouteAccess('bd') || isExecutive(); }
+  function canSeeFinanceData() { return hasRouteAccess('finance'); }
+  function canSeeHRPrivateData() { return hasRouteAccess('hr') || isExecutive(); }
+  function isFinanceDoc(type) { return ['Finance'].includes(String(type || '')); }
+  function isHRDoc(type) { return ['HR'].includes(String(type || '')); }
+  function isCommercialDoc(type) { return ['Contract', 'Proposal'].includes(String(type || '')); }
+  function isSensitiveDoc(type) { return isFinanceDoc(type) || isHRDoc(type) || isCommercialDoc(type); }
+  function canSeeDocument(d) {
+    if (!d || !state.user) return false;
+    if (isExecutive()) return true;
+    if (d.ownerId === state.user.id) return true;
+    if (isFinanceDoc(d.type)) return canSeeFinanceData();
+    if (isHRDoc(d.type)) return canSeeHRPrivateData();
+    if (isCommercialDoc(d.type)) return isManagerLevel() || hasRouteAccess('bd');
+    const owner = byId(state.db.users, d.ownerId);
+    const clientVisible = !d.clientId || visibleClients().some(c => c.id === d.clientId);
+    return clientVisible || canSeeUser(state.user, owner);
+  }
+  function canCreateSensitiveDocType(type) {
+    if (isFinanceDoc(type)) return canSeeFinanceData();
+    if (isHRDoc(type)) return canSeeHRPrivateData();
+    if (isCommercialDoc(type)) return isManagerLevel() || hasRouteAccess('bd');
+    return canCreateDocument();
+  }
+  function visibleDocuments() { return (state.db.documents || []).filter(canSeeDocument); }
+  function visibleProposals() {
+    if (!state.user || !hasRouteAccess('bd')) return [];
+    if (isExecutive()) return state.db.proposals || [];
+    return (state.db.proposals || []).filter(p => {
+      const owner = byId(state.db.users, p.ownerId);
+      return owner?.id === state.user.id || canSeeUser(state.user, owner) || state.user.department === 'Marketing';
+    });
+  }
+  function reviewQueueTasks() {
+    return visibleTasks().filter(t => ['Submitted','Under Review'].includes(t.status) && canApprove(t));
+  }
+  function resetSessionView() {
+    state.route = 'dashboard';
+    state.selectedClientId = null;
+    state.selectedEmployeeId = null;
+    state.filters = { search: '', department: 'All', status: 'All' };
+    state.modal = null;
+    state.aiReport = '';
+    state.aiLoading = false;
+    state.aiMode = 'local';
+    state.aiNotice = '';
+    state.command = '';
+    state.fingerprintOk = false;
+    state.notifOpen = false;
+    state.aiChat = [];
+    state.aiWidgetOpen = false;
+  }
+
+  const SENSITIVE_RULES = [
+    { key: 'finance', label: 'finance, revenue, budgets, profitability, margins, P&L, invoices, or cost data', regex: /\b(finance|budget|revenue|profit|profitability|margin|cost[- ]?to[- ]?income|cash[- ]?flow|invoice|receivable|payable|p&l|expense|forecast|cost center|tax payment)\b/i, allowed: () => canSeeFinanceData() },
+    { key: 'salary', label: 'salary bands, payroll/private HR records, leave approvals, or employee master data', regex: /\b(salary|salary band|payroll|personal data|employee master|leave approval|absence calendar|hr private|compensation)\b/i, allowed: () => canSeeHRPrivateData() },
+    { key: 'bd', label: 'BD pipeline, proposal values, commercial conversion data, or contract value', regex: /\b(pipeline|proposal value|weighted pipeline|conversion rate|deal value|contract value|commercial value|lead value|sales forecast)\b/i, allowed: () => hasRouteAccess('bd') || canSeeCommercialData() },
+    { key: 'client_private', label: 'full client portfolio, all client risks, or unrestricted client records', regex: /\b(all clients|full client|client portfolio|all risks|client value|contract end|renewal ratio)\b/i, allowed: () => isSeniorLevel() || hasRouteAccess('clients') }
+  ];
+
+  function blockedSensitiveRequest(text = '', command = '') {
+    const source = `${command || ''} ${String(text || '')}`;
+    for (const rule of SENSITIVE_RULES) {
+      if (rule.regex.test(source) && !rule.allowed()) return rule;
+    }
+    return null;
+  }
+
+  function cleanText(value, max = 120) {
+    return String(value ?? '').replace(/[<>]/g, '').replace(/\s+/g, ' ').trim().slice(0, max);
+  }
+
+  function validEmail(value) { return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(value || '').trim()); }
+  function validDate(value) { return !value || /^\d{4}-\d{2}-\d{2}$/.test(String(value)); }
+  function safeNumber(value, min = 0, max = 9999999) {
+    const n = Number(value || 0);
+    if (!Number.isFinite(n)) return min;
+    return Math.max(min, Math.min(max, n));
+  }
+
+  function fileLabel(file) {
+    if (!file || typeof file !== 'object' || !file.name) return '';
+    const size = Number(file.size || 0);
+    const sizeLabel = size > 1024*1024 ? `${(size/1024/1024).toFixed(1)} MB` : size > 1024 ? `${Math.round(size/1024)} KB` : `${size} B`;
+    return `${cleanText(file.name, 100)} (${sizeLabel})`;
+  }
+
+  function canEditTask(t) {
+    if (!t || !state.user) return false;
+    if (isExecutive()) return true;
+    if (t.assigneeId === state.user.id || t.reviewerId === state.user.id) return true;
+    const assignee = byId(state.db.users, t.assigneeId);
+    return !!(assignee && canSeeUser(state.user, assignee) && roleLevel(state.user.role) > roleLevel(assignee.role));
+  }
+
+  function canEditUser(u) {
+    if (!u || !state.user) return false;
+    if (state.user.role === 'Admin') return true;
+    return state.user.role === 'Partner' && roleLevel(u.role) < roleLevel('Partner');
+  }
+
+  function canEditClient(c) {
+    if (!c || !state.user) return false;
+    return isManagerLevel() || c.ownerId === state.user.id || c.relationshipManagerId === state.user.id;
+  }
+
+  function hasRouteAccess(route) {
+    if (!state.user) return false;
+    if (['dashboard', 'workflow', 'documents', 'ai', 'settings'].includes(route)) return true;
+    if (route === 'review') return isSeniorLevel();
+    if (route === 'clients') return isAssociateLevel();
+    if (route === 'team') return isSeniorLevel();
+    if (route === 'bd') return isManagerLevel() || ['Marketing', 'Business Advisory'].includes(state.user.department);
+    if (route === 'finance') return isExecutive() || state.user.department === 'Internal Finance';
+    if (route === 'hr') return isExecutive() || state.user.department === 'HR';
+    if (route === 'marketing') return isExecutive() || state.user.department === 'Marketing';
+    if (route === 'global') return isSeniorLevel();
+    if (route === 'admin') return isExecutive();
+    if (route === 'audit') return isExecutive();
+    return false;
+  }
+
+  function ensureRouteAccess() {
+    if (!hasRouteAccess(state.route)) state.route = 'dashboard';
+  }
+
+  function canCreateTask() { return isSeniorLevel(); }
+  function canCreateClient() { return isManagerLevel(); }
+  function canCreateDocument() { return isAssociateLevel(); }
+  function canCreateUsers() { return isExecutive(); }
+  function canManageFinance() { return hasRouteAccess('finance'); }
+  function canManageHR() { return hasRouteAccess('hr'); }
+  function canManageMarketing() { return hasRouteAccess('marketing'); }
+  function canManageBD() { return hasRouteAccess('bd'); }
+
+  function permissionScopeLabel() {
+    if (state.user.role === 'Admin') return 'Full system administration';
+    if (state.user.role === 'Partner') return 'Firm-wide leadership visibility';
+    if (state.user.role === 'Manager') return `Department management: ${state.user.department}`;
+    if (state.user.role === 'Senior') return `Senior review scope: ${state.user.department}`;
+    if (state.user.role === 'Associate') return 'Delivery scope: clients, documents, assigned workflow';
+    return 'Execution scope: own tasks, documents, and AI help';
+  }
+
+  function accessLevelText() {
+    const modules = navItems().map(x => x[2]).join(', ');
+    return `${permissionScopeLabel()} · Modules: ${modules}`;
+  }
+
+  function renderAccessSummary() {
+    const can = [
+      ['Create users', canCreateUsers()],
+      ['Create clients', canCreateClient()],
+      ['Create tasks', canCreateTask()],
+      ['Add documents', canCreateDocument()],
+      ['View team', hasRouteAccess('team')],
+      ['Finance access', hasRouteAccess('finance')],
+      ['HR access', hasRouteAccess('hr')]
+    ];
+    return `<section class="access-banner">
+      <div>
+        <div class="eyebrow">Role-based workspace</div>
+        <h2>${esc(state.user.role)} view · ${esc(state.user.department)}</h2>
+        <p>${esc(accessLevelText())}</p>
+      </div>
+      <div class="permission-strip">
+        ${can.map(([label, ok]) => `<span class="permission-chip ${ok ? 'on' : 'off'}">${ok ? '✓' : '—'} ${esc(label)}</span>`).join('')}
+      </div>
+    </section>`;
+  }
+
+  function renderAccessDenied(route) {
+    return `<section class="card locked-card">
+      <div class="lock-icon">🔒</div>
+      <div class="card-title">Restricted module</div>
+      <p class="card-subtitle">Your current role (${esc(state.user.role)}) does not have permission to access this module.</p>
+      <button class="btn" data-action="route" data-route="dashboard">Back to dashboard</button>
+    </section>`;
+  }
+
+  function canMoveForward(t) {
+    if (!t || !state.user) return false;
+    if (statusIndex(t.status) >= STATUS.length - 1) return false;
+    if (isExecutive()) return true;
+    if (t.reviewerId === state.user.id) return true;
+    const assignee = byId(state.db.users, t.assigneeId);
+    if (assignee && canSeeUser(state.user, assignee) && roleLevel(state.user.role) > roleLevel(assignee.role)) return true;
+    if (t.assigneeId === state.user.id) return statusIndex(t.status) < STATUS.indexOf('Submitted');
+    return false;
+  }
+
+  function canMoveBack(t) {
+    if (!t || !state.user) return false;
+    if (statusIndex(t.status) <= 0) return false;
+    if (isExecutive()) return true;
+    if (t.reviewerId === state.user.id) return true;
+    const assignee = byId(state.db.users, t.assigneeId);
+    if (assignee && canSeeUser(state.user, assignee) && roleLevel(state.user.role) > roleLevel(assignee.role)) return true;
+    return t.assigneeId === state.user.id && ['In Progress', 'Submitted'].includes(t.status);
+  }
+
+  function canUseAICommand(command) {
+    if (!command) return true;
+    if (command === 'finance') return hasRouteAccess('finance');
+    if (command === 'bd') return hasRouteAccess('bd');
+    if (command === 'risk') return isSeniorLevel() || hasRouteAccess('clients');
+    if (command === 'workload') return isSeniorLevel() || hasRouteAccess('team');
+    if (command === 'summary') return isSeniorLevel();
+    if (command === 'taskhelp') return true;
+    if (command === 'quality') return true;
+    if (command === 'implementation') return true;
+    return false;
+  }
+
+  function aiCommands() {
+    const items = [
+      ['taskhelp','My task assistant','What should I work on next?'],
+      ['quality','Quality review','What work needs review?'],
+      ['implementation','Implementation plan','What should we build next?'],
+      ['risk','Client risk','Which clients need attention?'],
+      ['workload','Workload','Who is overloaded?'],
+      ['bd','BD pipeline','Which proposal should we follow up?'],
+      ['finance','Finance','Where are budget risks?']
+    ];
+    return items.filter(([cmd]) => canUseAICommand(cmd));
+  }
+
+  function seedData() {
+    const users = [
+      { id: 'u_admin', name: 'Admin Console', email: 'admin@kreston.demo', password: PASS, role: 'Admin', department: 'IT', title: 'System Administrator', active: true, phone: '+355 69 000 0000', skills: ['Access Control', 'Audit Logs', 'User Setup'], hireDate: '2020-01-15', salaryBand: 'N/A', notes: 'System admin account.' },
+      { id: 'u_partner', name: 'Elira Gashi', email: 'partner@kreston.demo', password: PASS, role: 'Partner', department: 'Leadership', title: 'Managing Partner', active: true, phone: '+355 69 111 1111', skills: ['Strategy', 'Approvals', 'Client Governance'], hireDate: '2015-03-01', salaryBand: 'Band A', notes: 'Founding partner. Oversees all departments.' },
+      { id: 'u_m_audit', name: 'Ardit Beqiri', email: 'manager.audit@kreston.demo', password: PASS, role: 'Manager', department: 'Audit & Advisory', title: 'Audit Manager', active: true, phone: '+355 69 222 2001', skills: ['ISA', 'Review', 'Risk Control'], hireDate: '2018-06-15', salaryBand: 'Band B', notes: 'Manages audit team. Key reviewer for complex engagements.' },
+      { id: 'u_s_audit', name: 'Bora Marku', email: 'senior.audit@kreston.demo', password: PASS, role: 'Senior', department: 'Audit & Advisory', title: 'Senior Auditor', active: true, phone: '+355 69 222 2002', skills: ['Planning', 'Testing', 'Documentation'], hireDate: '2020-09-01', salaryBand: 'Band C', notes: 'Leads audit fieldwork. Mentors juniors.' },
+      { id: 'u_a_audit', name: 'Dion Hoxha', email: 'associate.audit@kreston.demo', password: PASS, role: 'Associate', department: 'Audit & Advisory', title: 'Audit Associate', active: true, phone: '+355 69 222 2003', skills: ['Fieldwork', 'Sampling', 'Reconciliations'], hireDate: '2022-01-10', salaryBand: 'Band D', notes: 'Second-year associate. Good technical skills.' },
+      { id: 'u_j_audit', name: 'Mira Popa', email: 'junior.audit@kreston.demo', password: PASS, role: 'Junior', department: 'Audit & Advisory', title: 'Junior Auditor', active: true, phone: '+355 69 222 2004', skills: ['Checklists', 'Evidence Upload', 'Data Entry'], hireDate: '2023-09-01', salaryBand: 'Band E', notes: 'First-year junior. Learning fieldwork.' },
+      { id: 'u_i_audit', name: 'Noel Koci', email: 'intern@kreston.demo', password: PASS, role: 'Intern', department: 'Audit & Advisory', title: 'Audit Intern', active: true, phone: '+355 69 222 2005', skills: ['File Prep', 'Scanning', 'Support'], hireDate: '2024-02-01', salaryBand: 'Band F', notes: 'Summer intern. University final year.' },
+      { id: 'u_m_tax', name: 'Klea Doda', email: 'manager.tax@kreston.demo', password: PASS, role: 'Manager', department: 'Accounting & Tax', title: 'Tax Manager', active: true, phone: '+355 69 333 3001', skills: ['Tax Advisory', 'VAT', 'Compliance'], hireDate: '2017-04-01', salaryBand: 'Band B', notes: 'Senior tax expert. Handles large clients.' },
+      { id: 'u_s_tax', name: 'Luan Cara', email: 'senior.tax@kreston.demo', password: PASS, role: 'Senior', department: 'Accounting & Tax', title: 'Senior Tax Consultant', active: true, phone: '+355 69 333 3002', skills: ['Reporting', 'Deadlines', 'Client Calls'], hireDate: '2021-03-15', salaryBand: 'Band C', notes: 'Reliable senior. Good client communication.' },
+      { id: 'u_fin', name: 'Ina Shehu', email: 'finance@kreston.demo', password: PASS, role: 'Manager', department: 'Internal Finance', title: 'Internal Finance Manager', active: true, phone: '+355 69 444 4001', skills: ['Budgets', 'Cash Flow', 'Invoices'], hireDate: '2019-07-01', salaryBand: 'Band B', notes: 'Manages firm finances and expense approval chain.' },
+      { id: 'u_hr', name: 'Rina Lika', email: 'hr@kreston.demo', password: PASS, role: 'Manager', department: 'HR', title: 'HR Manager', active: true, phone: '+355 69 555 5001', skills: ['Leave', 'Training', 'Performance'], hireDate: '2018-01-01', salaryBand: 'Band B', notes: 'Handles all HR operations and leave approvals.' },
+      { id: 'u_marketing', name: 'Eris Veli', email: 'marketing@kreston.demo', password: PASS, role: 'Manager', department: 'Marketing', title: 'Marketing Lead', active: true, phone: '+355 69 666 6001', skills: ['Campaigns', 'Leads', 'Events'], hireDate: '2020-05-15', salaryBand: 'Band C', notes: 'Leads all digital and event marketing.' }
+    ];
+
+    const clients = [
+      { id: 'c_agrifood', name: 'Alba AgriFood Group', industry: 'Agriculture & Food', contact: 'D. Marku', email: 'finance@albaagri.demo', phone: '+355 68 101 1111', status: 'Active Client', leadSource: 'Referral', ownerId: 'u_partner', relationshipManagerId: 'u_m_audit', value: 42000, progress: 72, risk: 'Medium', contractStart: todayISO(-110), contractEnd: todayISO(20), services: ['Audit & Advisory', 'Accounting & Tax', 'Payroll'], notes: 'Important annual audit client with renewal decision approaching. Board presentation scheduled.' },
+      { id: 'c_balkan', name: 'Balkan Retail Network', industry: 'Retail', contact: 'E. Doda', email: 'admin@balkanretail.demo', phone: '+355 68 202 2222', status: 'Proposal Sent', leadSource: 'Marketing Campaign', ownerId: 'u_m_tax', relationshipManagerId: 'u_m_tax', value: 31000, progress: 44, risk: 'High', contractStart: todayISO(-20), contractEnd: todayISO(11), services: ['Accounting & Tax', 'Legal Advisory'], notes: 'Proposal pending longer than expected. Partner follow-up recommended. High conversion risk.' },
+      { id: 'c_tech', name: 'Tirana Tech Labs', industry: 'Technology', contact: 'A. Kodra', email: 'ceo@tiranatech.demo', phone: '+355 68 303 3333', status: 'Onboarding', leadSource: 'LinkedIn', ownerId: 'u_partner', relationshipManagerId: 'u_m_audit', value: 25500, progress: 58, risk: 'Low', contractStart: todayISO(-8), contractEnd: todayISO(180), services: ['Business Advisory', 'HR', 'Audit & Advisory'], notes: 'New client in onboarding phase. Needs checklist and document request completed.' },
+      { id: 'c_energy', name: 'Adriatic Energy Sh.a.', industry: 'Energy', contact: 'M. Hoxha', email: 'cfo@adriaticenergy.demo', phone: '+355 68 404 4444', status: 'Active Client', leadSource: 'Kreston Global', ownerId: 'u_partner', relationshipManagerId: 'u_m_audit', value: 67000, progress: 81, risk: 'Medium', contractStart: todayISO(-300), contractEnd: todayISO(65), services: ['Audit & Advisory', 'Business Advisory', 'Internal Controls'], notes: 'High-value engagement. Strict review chain required. Renewal discussions started.' },
+      { id: 'c_med', name: 'MedCare Clinic', industry: 'Healthcare', contact: 'S. Pasha', email: 'ops@medcare.demo', phone: '+355 68 505 5555', status: 'Renewal Discussion', leadSource: 'Existing Client', ownerId: 'u_m_tax', relationshipManagerId: 'u_s_tax', value: 19000, progress: 88, risk: 'Low', contractStart: todayISO(-360), contractEnd: todayISO(35), services: ['Payroll', 'Accounting & Tax'], notes: 'Satisfied long-term client. Prepare renewal packet with updated pricing and scope.' }
+    ];
+
+    const tasks = [
+      { id: 't_1', title: 'Collect audit evidence package', clientId: 'c_agrifood', department: 'Audit & Advisory', assigneeId: 'u_j_audit', reviewerId: 'u_s_audit', priority: 'High', status: 'In Progress', dueDate: todayISO(2), progress: 60, hours: 9, quality: 78, description: 'Request invoices, bank confirmations, and inventory snapshots from client finance team.', updatedAt: todayISO(-1) },
+      { id: 't_2', title: 'Review inventory testing working paper', clientId: 'c_agrifood', department: 'Audit & Advisory', assigneeId: 'u_s_audit', reviewerId: 'u_m_audit', priority: 'Medium', status: 'Under Review', dueDate: todayISO(1), progress: 86, hours: 13, quality: 84, description: 'Check sampling logic, exceptions, and final conclusion. Ensure ISA compliance.', updatedAt: todayISO(0) },
+      { id: 't_3', title: 'Prepare proposal revision', clientId: 'c_balkan', department: 'Accounting & Tax', assigneeId: 'u_s_tax', reviewerId: 'u_m_tax', priority: 'High', status: 'Submitted', dueDate: todayISO(-2), progress: 100, hours: 7, quality: 72, description: 'Update proposal based on client comments and expanded service scope.', updatedAt: todayISO(-2) },
+      { id: 't_4', title: 'Onboarding checklist setup', clientId: 'c_tech', department: 'Business Advisory', assigneeId: 'u_m_audit', reviewerId: 'u_partner', priority: 'Medium', status: 'In Progress', dueDate: todayISO(5), progress: 35, hours: 4, quality: 80, description: 'Create onboarding milestones and assign responsible team members per service.', updatedAt: todayISO(0) },
+      { id: 't_5', title: 'Partner final approval for audit plan', clientId: 'c_energy', department: 'Audit & Advisory', assigneeId: 'u_m_audit', reviewerId: 'u_partner', priority: 'High', status: 'Under Review', dueDate: todayISO(0), progress: 91, hours: 16, quality: 89, description: 'Submit final audit plan and risk matrix for partner approval.', updatedAt: todayISO(0) },
+      { id: 't_6', title: 'Monthly payroll reconciliation', clientId: 'c_med', department: 'Bookkeeping & Payroll', assigneeId: 'u_s_tax', reviewerId: 'u_m_tax', priority: 'Low', status: 'Approved', dueDate: todayISO(4), progress: 100, hours: 5, quality: 92, description: 'Reconcile payroll file and prepare approval note for partner sign-off.', updatedAt: todayISO(-1) },
+      { id: 't_7', title: 'Upload signed engagement letter', clientId: 'c_tech', department: 'Legal Advisory', assigneeId: 'u_i_audit', reviewerId: 'u_m_audit', priority: 'Medium', status: 'Draft', dueDate: todayISO(7), progress: 12, hours: 1, quality: 65, description: 'Attach signed letter and update client record in document library.', updatedAt: todayISO(-1) },
+      { id: 't_8', title: 'VAT exposure risk summary', clientId: 'c_balkan', department: 'Accounting & Tax', assigneeId: 'u_m_tax', reviewerId: 'u_partner', priority: 'High', status: 'In Progress', dueDate: todayISO(3), progress: 48, hours: 8, quality: 77, description: 'Prepare risk summary for partner-level follow-up and negotiation support.', updatedAt: todayISO(0) },
+      { id: 't_9', title: 'Internal budget variance review', clientId: null, department: 'Internal Finance', assigneeId: 'u_fin', reviewerId: 'u_partner', priority: 'Medium', status: 'Submitted', dueDate: todayISO(2), progress: 100, hours: 6, quality: 88, description: 'Explain variance in marketing and IT cost centers for Q2 reporting.', updatedAt: todayISO(-1) },
+      { id: 't_10', title: 'Certification training plan', clientId: null, department: 'HR', assigneeId: 'u_hr', reviewerId: 'u_partner', priority: 'Low', status: 'In Progress', dueDate: todayISO(12), progress: 55, hours: 3, quality: 90, description: 'Plan trainings by department and certification deadlines for H2.', updatedAt: todayISO(0) }
+    ];
+
+    const documents = [
+      { id: 'd_1', name: 'Alba AgriFood - Audit Planning Memo.pdf', clientId: 'c_agrifood', ownerId: 'u_s_audit', type: 'Audit File', version: 'v1.4', status: 'Under Review', updatedAt: todayISO(-1), size: '2.4 MB' },
+      { id: 'd_2', name: 'Balkan Retail - Proposal Draft.docx', clientId: 'c_balkan', ownerId: 'u_s_tax', type: 'Proposal', version: 'v2.1', status: 'Submitted', updatedAt: todayISO(-2), size: '820 KB' },
+      { id: 'd_3', name: 'Tirana Tech - Signed Contract.pdf', clientId: 'c_tech', ownerId: 'u_m_audit', type: 'Contract', version: 'v1.0', status: 'Approved', updatedAt: todayISO(-6), size: '1.1 MB' },
+      { id: 'd_4', name: 'Adriatic Energy - Risk Matrix.xlsx', clientId: 'c_energy', ownerId: 'u_m_audit', type: 'Excel Import', version: 'v3.0', status: 'Under Review', updatedAt: todayISO(0), size: '440 KB' },
+      { id: 'd_5', name: 'MedCare - Payroll Register.xlsx', clientId: 'c_med', ownerId: 'u_s_tax', type: 'Payroll', version: 'v2.8', status: 'Approved', updatedAt: todayISO(-1), size: '315 KB' }
+    ];
+
+    const proposals = [
+      { id: 'p_1', client: 'Balkan Retail Network', clientId: 'c_balkan', source: 'Marketing Campaign', ownerId: 'u_m_tax', value: 31000, stage: 'Negotiation', probability: 62, ageDays: 18, services: ['Accounting & Tax', 'Legal Advisory'], notes: 'Awaiting legal sign-off from client CFO.', createdAt: todayISO(-18) },
+      { id: 'p_2', client: 'South Logistics Sh.a.', clientId: null, source: 'Referral', ownerId: 'u_partner', value: 22000, stage: 'Proposal Draft', probability: 48, ageDays: 6, services: ['Audit & Advisory', 'Business Advisory'], notes: 'Referred by Adriatic Energy CFO. Strong interest.', createdAt: todayISO(-6) },
+      { id: 'p_3', client: 'Blue Coast Hotels', clientId: null, source: 'Kreston Global', ownerId: 'u_m_audit', value: 54000, stage: 'Discovery Call', probability: 38, ageDays: 4, services: ['Audit & Advisory', 'Tax'], notes: 'Initial discovery call completed. Sending scoping questionnaire.', createdAt: todayISO(-4) },
+      { id: 'p_4', client: 'GreenBuild Albania', clientId: null, source: 'LinkedIn', ownerId: 'u_marketing', value: 17000, stage: 'Lead Qualified', probability: 24, ageDays: 2, services: ['Business Advisory'], notes: 'Responded to webinar campaign. SDR call booked.', createdAt: todayISO(-2) },
+      { id: 'p_5', client: 'Primavera Foods', clientId: null, source: 'Cold Outreach', ownerId: 'u_m_tax', value: 38000, stage: 'Proposal Sent', probability: 55, ageDays: 12, services: ['Accounting & Tax', 'Payroll'], notes: 'Proposal sent. Decision expected by end of month.', createdAt: todayISO(-12) }
+    ];
+
+    const budgets = [
+      { department: 'Audit & Advisory', budget: 92000, actual: 61500, forecast: 87000, revenue: 141000 },
+      { department: 'Accounting & Tax', budget: 66000, actual: 42800, forecast: 63000, revenue: 104500 },
+      { department: 'Bookkeeping & Payroll', budget: 34000, actual: 21500, forecast: 32300, revenue: 61000 },
+      { department: 'Marketing', budget: 19000, actual: 15400, forecast: 22600, revenue: 0 },
+      { department: 'Internal Finance', budget: 27000, actual: 16200, forecast: 25000, revenue: 0 }
+    ];
+
+    const expenses = [
+      { id: 'e_1', category: 'Travel', description: 'Client site visit - Alba AgriFood', amount: 320, submittedBy: 'u_s_audit', department: 'Audit & Advisory', status: 'Approved', date: todayISO(-5), approverId: 'u_m_audit', notes: 'Two days on-site.' },
+      { id: 'e_2', category: 'Software', description: 'Caseware license renewal Q3', amount: 1200, submittedBy: 'u_fin', department: 'Internal Finance', status: 'Approved', date: todayISO(-10), approverId: 'u_partner', notes: 'Annual renewal.' },
+      { id: 'e_3', category: 'Training', description: 'ACCA exam registration - Bora Marku', amount: 450, submittedBy: 'u_hr', department: 'HR', status: 'Pending', date: todayISO(-2), approverId: 'u_partner', notes: 'P7 Advanced Audit paper.' },
+      { id: 'e_4', category: 'Marketing', description: 'Tax Compliance Webinar sponsorship', amount: 800, submittedBy: 'u_marketing', department: 'Marketing', status: 'Pending', date: todayISO(-1), approverId: 'u_fin', notes: 'Digital promotion included.' },
+      { id: 'e_5', category: 'Client Entertainment', description: 'Partner dinner - Adriatic Energy', amount: 580, submittedBy: 'u_partner', department: 'Leadership', status: 'Approved', date: todayISO(-7), approverId: 'u_fin', notes: 'Pre-renewal dinner with CFO.' }
+    ];
+
+    const campaigns = [
+      { id: 'm_1', name: 'Tax Compliance Webinar', ownerId: 'u_marketing', budget: 2400, spend: 1650, leads: 17, conversions: 4, status: 'Active' },
+      { id: 'm_2', name: 'Kreston Global Referral Push', ownerId: 'u_partner', budget: 1300, spend: 900, leads: 9, conversions: 3, status: 'Active' },
+      { id: 'm_3', name: 'Payroll Outsourcing Landing Page', ownerId: 'u_marketing', budget: 1800, spend: 1780, leads: 21, conversions: 5, status: 'Completed' }
+    ];
+
+    const leaves = [
+      { id: 'l_1', userId: 'u_j_audit', type: 'Annual Leave', from: todayISO(10), to: todayISO(12), status: 'Pending', approverId: 'u_s_audit', notes: 'Summer holiday request.' },
+      { id: 'l_2', userId: 'u_s_tax', type: 'Training Day', from: todayISO(7), to: todayISO(7), status: 'Approved', approverId: 'u_m_tax', notes: 'ACCA revision day.' },
+      { id: 'l_3', userId: 'u_a_audit', type: 'Sick Leave', from: todayISO(-1), to: todayISO(1), status: 'Approved', approverId: 'u_m_audit', notes: 'Medical certificate provided.' },
+      { id: 'l_4', userId: 'u_i_audit', type: 'Personal Leave', from: todayISO(20), to: todayISO(20), status: 'Pending', approverId: 'u_s_audit', notes: 'Personal matter.' }
+    ];
+
+    const resources = [
+      { id: 'r_1', title: 'Kreston Global Audit Quality Update Q2 2025', category: 'Audit', source: 'Global Network', status: 'New', description: 'Latest ISA amendments and quality management standards from global network.', addedAt: todayISO(-3) },
+      { id: 'r_2', title: 'IFRS for SMEs - Complete Checklist 2025', category: 'Accounting', source: 'Knowledge Base', status: 'Pinned', description: 'Comprehensive disclosure checklist aligned with IFRS for SMEs standard.', addedAt: todayISO(-14) },
+      { id: 'r_3', title: 'Client Onboarding Template Pack', category: 'Operations', source: 'Internal', status: 'Recommended', description: 'Standardized onboarding pack including engagement letter and document request list.', addedAt: todayISO(-21) },
+      { id: 'r_4', title: 'Cybersecurity Due Diligence Checklist', category: 'Advisory', source: 'Global Network', status: 'New', description: 'Used in advisory engagements to assess client IT security posture.', addedAt: todayISO(-5) },
+      { id: 'r_5', title: 'Transfer Pricing Documentation Guide', category: 'Tax', source: 'Global Network', status: 'Recommended', description: 'Country-specific guidance for TP documentation under Albanian tax law.', addedAt: todayISO(-7) },
+      { id: 'r_6', title: 'ESG Reporting Framework - Starter Pack', category: 'Advisory', source: 'Kreston Global', status: 'New', description: 'Entry-level ESG reporting framework for client advisory engagements.', addedAt: todayISO(-2) }
+    ];
+
+    return {
+      users, clients, tasks, documents, proposals, budgets, expenses, campaigns, leaves, resources,
+      logs: [
+        { id: uid('log'), at: new Date().toISOString(), userId: 'u_admin', action: 'Demo data initialized', module: 'System', entity: 'Platform', result: 'Success' },
+        { id: uid('log'), at: new Date().toISOString(), userId: 'u_partner', action: 'Partner dashboard reviewed', module: 'Dashboard', entity: 'Dashboard', result: 'Success' },
+        { id: uid('log'), at: new Date().toISOString(), userId: 'u_m_audit', action: 'Audit task assigned to junior', module: 'Workflow', entity: 'Task t_1', result: 'Success' }
+      ]
+    };
+  }
+
+  function load() {
+    try {
+      const raw = localStorage.getItem(STORE_KEY);
+      state.db = raw ? JSON.parse(raw) : seedData();
+      if (!raw) save();
+      // ensure expenses/resources arrays exist on old saves
+      if (!state.db.expenses) state.db.expenses = seedData().expenses;
+      if (!state.db.resources) state.db.resources = seedData().resources;
+      const sessionEmail = localStorage.getItem(SESSION_KEY);
+      state.user = sessionEmail ? state.db.users.find(u => u.email === sessionEmail && u.active) || null : null;
+      state.selectedClientId = state.db.clients[0]?.id || null;
+      state.selectedEmployeeId = state.user?.id || state.db.users[0]?.id || null;
+    } catch (e) {
+      console.error(e);
+      state.db = seedData();
+      state.user = null;
+      save();
+    }
+  }
+
+  function save() {
+    localStorage.setItem(STORE_KEY, JSON.stringify(state.db));
+  }
+
+  function addLog(action, module = state.route, entity = '', result = 'Success') {
+    state.db.logs.unshift({ id: uid('log'), at: new Date().toISOString(), userId: state.user?.id || 'system', action, module, entity, result });
+    state.db.logs = state.db.logs.slice(0, 200);
+    save();
+  }
+
+  function toast(message) {
+    const box = $('#toast');
+    const el = document.createElement('div');
+    el.className = 'toast-message';
+    el.textContent = message;
+    box.appendChild(el);
+    setTimeout(() => el.remove(), 3000);
+  }
+
+  function canSeeUser(viewer, target) {
+    if (!viewer || !target) return false;
+    if (viewer.role === 'Admin' || viewer.role === 'Partner') return true;
+    if (viewer.id === target.id) return true;
+    const sameDept = viewer.department === target.department || viewer.department === 'Leadership';
+    return sameDept && roleLevel(viewer.role) > roleLevel(target.role);
+  }
+
+  function visibleUsers() {
+    return state.db.users.filter(u => canSeeUser(state.user, u));
+  }
+
+  function visibleTasks() {
+    return state.db.tasks.filter(t => {
+      const assignee = byId(state.db.users, t.assigneeId);
+      const reviewer = byId(state.db.users, t.reviewerId);
+      if (state.user.role === 'Admin' || state.user.role === 'Partner') return true;
+      if (t.assigneeId === state.user.id || t.reviewerId === state.user.id) return true;
+      return canSeeUser(state.user, assignee) || canSeeUser(state.user, reviewer);
+    });
+  }
+
+  function visibleClients() {
+    if (state.user.role === 'Admin' || state.user.role === 'Partner') return state.db.clients;
+    const tasks = visibleTasks();
+    const allowedIds = new Set(tasks.map(t => t.clientId).filter(Boolean));
+    state.db.clients.forEach(c => {
+      if (c.relationshipManagerId === state.user.id || c.ownerId === state.user.id) allowedIds.add(c.id);
+    });
+    return state.db.clients.filter(c => allowedIds.has(c.id));
+  }
+
+  function isOverdue(t) {
+    return t.dueDate && new Date(t.dueDate) < new Date(todayISO(0)) && !['Approved', 'Delivered'].includes(t.status);
+  }
+
+  function taskRisk(t) {
+    if (isOverdue(t)) return 'High';
+    if (t.priority === 'High' && t.progress < 70) return 'High';
+    if (t.priority === 'High' || t.progress < 45) return 'Medium';
+    return 'Low';
+  }
+
+  function statusIndex(status) { return STATUS.indexOf(status); }
+
+  function completionByStatus(status) {
+    const map = { 'Draft': 8, 'In Progress': 38, 'Submitted': 70, 'Under Review': 84, 'Approved': 95, 'Delivered': 100 };
+    return map[status] || 0;
+  }
+
+  function scoreEmployee(userId) {
+    const tasks = state.db.tasks.filter(t => t.assigneeId === userId);
+    if (!tasks.length) return { score: 70, completed: 0, overdue: 0, avgQuality: 70, workload: 0, total: 0 };
+    const completed = tasks.filter(t => ['Approved', 'Delivered'].includes(t.status)).length;
+    const overdue = tasks.filter(isOverdue).length;
+    const avgQuality = tasks.reduce((s, t) => s + Number(t.quality || 70), 0) / tasks.length;
+    const workload = tasks.filter(t => !['Approved', 'Delivered'].includes(t.status)).length;
+    const score = Math.max(35, Math.min(99, Math.round(avgQuality + completed * 3 - overdue * 9 - workload * 1.5)));
+    return { score, completed, overdue, avgQuality: Math.round(avgQuality), workload, total: tasks.length };
+  }
+
+  function clientRisk(client) {
+    const tasks = state.db.tasks.filter(t => t.clientId === client.id);
+    const overdue = tasks.filter(isOverdue).length;
+    const highPriorityOpen = tasks.filter(t => t.priority === 'High' && !['Approved', 'Delivered'].includes(t.status)).length;
+    const daysToContract = Math.ceil((new Date(client.contractEnd) - new Date(todayISO(0))) / 86400000);
+    let score = 20;
+    if (client.risk === 'High') score += 35;
+    if (client.risk === 'Medium') score += 18;
+    score += overdue * 16 + highPriorityOpen * 9;
+    if (daysToContract <= 14) score += 25;
+    else if (daysToContract <= 45) score += 12;
+    return Math.max(1, Math.min(99, score));
+  }
+
+  function unreadNotifCount() {
+    const tasks = visibleTasks();
+    const overdue = tasks.filter(isOverdue).length;
+    const review = reviewQueueTasks().length;
+    const pendingLeaves = state.db.leaves.filter(l => l.status === 'Pending' && (l.approverId === state.user.id || isExecutive())).length;
+    const pendingExpenses = hasRouteAccess('finance') ? state.db.expenses.filter(e => e.status === 'Pending').length : 0;
+    return overdue + review + pendingLeaves + pendingExpenses;
+  }
+
+  function titleFor(route) {
+    const map = {
+      dashboard: ['Executive Command Center', 'Firm-wide KPIs, client risks, workload, and performance signals.'],
+      clients: ['Client 360', 'Every client journey from first contact to delivery and renewal.'],
+      workflow: ['Workflow Board', 'Preparation, review, approval, delivery, and digital sign-off.'],
+      review: ['Review Queue', 'Submitted work waiting for Senior, Manager, Partner, or Admin review.'],
+      bd: ['Business Development Pipeline', 'Leads, proposals, contracts, follow-ups, and conversion analytics.'],
+      finance: ['Internal Finance', 'Budgets, forecasts, profitability, expense approvals, and cost-control signals.'],
+      hr: ['HR & Performance', 'Leave management, training, employee master data, and performance insights.'],
+      documents: ['Document Control', 'Versioned files linked to clients, tasks, owners, and approval state.'],
+      team: ['Team Performance', 'Hierarchical visibility, workload, productivity, and quality scoring.'],
+      ai: ['Gemini Supervisor Copilot', 'Ask operational questions and generate management summaries.'],
+      marketing: ['Marketing Module', 'Campaign tracking, lead generation, ROI, and conversion metrics.'],
+      global: ['Kreston Global Hub', 'Network resources, templates, knowledge base, and opportunities.'],
+      admin: ['Admin Center', 'Create users, configure roles, manage access, and inspect full system state.'],
+      audit: ['Audit Trail', 'Full traceable log of all user actions, approvals, and system events.'],
+      settings: ['Demo Settings', 'Reset demo data, export information, and view accounts.']
+    };
+    return map[route] || map.dashboard;
+  }
+
+  function navItems() {
+    const items = [
+      ['dashboard', '📊', 'Dashboard'],
+      ['clients', '🏢', 'Client 360'],
+      ['workflow', '✅', 'Workflow'],
+      ['review', '🧾', 'Review Queue'],
+      ['bd', '💼', 'BD Pipeline'],
+      ['finance', '💶', 'Finance'],
+      ['hr', '👥', 'HR'],
+      ['documents', '📁', 'Documents'],
+      ['team', '📈', 'Team'],
+      ['ai', '🤖', 'Gemini Copilot'],
+      ['marketing', '📣', 'Marketing'],
+      ['global', '🌐', 'Global Hub'],
+      ['audit', '🔍', 'Audit Trail'],
+      ['admin', '⚙️', 'Admin'],
+      ['settings', '🧩', 'Settings']
+    ];
+    return items.filter(([key]) => hasRouteAccess(key));
+  }
+
+  function render() {
+    if (!state.db) load();
+    if (!state.user) return renderLogin();
+    ensureRouteAccess();
+    const [pageTitle, desc] = titleFor(state.route);
+    const notifCount = unreadNotifCount();
+    app.innerHTML = `
+      <div class="app-shell">
+        <aside class="sidebar">
+          <div class="logo-box">
+            <div class="logo-mark">K</div>
+            <div>
+              <div class="logo-title">KrestonFlow AI</div>
+              <div class="logo-subtitle">Internal CRM & Workflow</div>
+            </div>
+          </div>
+          <div class="user-panel">
+            <div class="user-avatar">${esc(initials(state.user.name))}</div>
+            <div>
+              <div class="user-name">${esc(state.user.name)}</div>
+              <div class="user-meta">${esc(state.user.title)}</div>
+              <span class="role-chip">● ${esc(state.user.role)}</span>
+            </div>
+          </div>
+          <nav class="nav">
+            ${navItems().map(([key, icon, label]) => `<button class="${state.route === key ? 'active' : ''}" data-action="route" data-route="${key}">
+              <span class="nav-icon">${icon}</span>
+              <span>${label}</span>
+              ${key === 'workflow' ? `<span class="badge-number">${visibleTasks().filter(t => !['Approved','Delivered'].includes(t.status)).length}</span>` : ''}
+            </button>`).join('')}
+          </nav>
+          <div class="sidebar-footer">
+            ${isSeniorLevel() ? '<button class="ghost-dark" data-action="quick-report">Generate management summary</button>' : '<button class="ghost-dark" data-action="route" data-route="ai">Ask task copilot</button>'}
+            <button class="logout" data-action="logout">Log out</button>
+          </div>
+        </aside>
+        <main class="main">
+          <div class="topbar">
+            <div>
+              <h1>${pageTitle}</h1>
+            </div>
+            <div class="top-actions">
+              <button class="notif-btn ${notifCount > 0 ? 'has-badge' : ''}" data-action="toggle-notif">
+                🔔${notifCount > 0 ? `<span class="notif-badge-top">${notifCount}</span>` : ''}
+              </button>
+              ${hasRouteAccess('ai') ? '<button class="btn secondary" data-action="route" data-route="ai">Ask Copilot</button>' : ''}
+              ${canCreateTask() ? '<button class="btn" data-action="open-task-modal">+ New Task</button>' : ''}
+            </div>
+          </div>
+          ${state.notifOpen ? renderNotifPanel() : ''}
+          <div class="page-content${state.route === 'ai' ? ' page-content-flush' : ''}">
+            ${renderPage()}
+          </div>
+        </main>
+      </div>
+      ${renderModal()}
+      ${renderKaiWidget()}`;
+    afterRender();
+  }
+
+  function renderNotifPanel() {
+    const tasks = visibleTasks();
+    const overdueTasks = tasks.filter(isOverdue);
+    const reviewTasks = reviewQueueTasks();
+    const pendingLeaves = state.db.leaves.filter(l => l.status === 'Pending' && canSeeUser(state.user, byId(state.db.users, l.userId)));
+    const pendingExpenses = hasRouteAccess('finance') ? state.db.expenses.filter(e => e.status === 'Pending') : [];
+    return `<div class="notif-panel">
+      <div class="notif-header">
+        <b>Notifications</b>
+        <button class="btn small secondary" data-action="toggle-notif">Close</button>
+      </div>
+      ${overdueTasks.length ? `<div class="notif-section notif-red">
+        <div class="notif-title">⚠ Overdue tasks (${overdueTasks.length})</div>
+        ${overdueTasks.slice(0, 4).map(t => `<div class="notif-item">${esc(t.title)} — due ${fmtDate(t.dueDate)} · ${esc(userName(t.assigneeId))}</div>`).join('')}
+      </div>` : ''}
+      ${reviewTasks.length ? `<div class="notif-section notif-blue">
+        <div class="notif-title">📋 Awaiting your review (${reviewTasks.length})</div>
+        ${reviewTasks.slice(0, 4).map(t => `<div class="notif-item">${esc(t.title)} · ${esc(clientName(t.clientId))}</div>`).join('')}
+      </div>` : ''}
+      ${pendingLeaves.length ? `<div class="notif-section notif-orange">
+        <div class="notif-title">🏖 Pending leave requests (${pendingLeaves.length})</div>
+        ${pendingLeaves.map(l => `<div class="notif-item">${esc(userName(l.userId))} · ${esc(l.type)} · ${fmtDate(l.from)}</div>`).join('')}
+      </div>` : ''}
+      ${pendingExpenses.length ? `<div class="notif-section notif-orange">
+        <div class="notif-title">💳 Pending expenses (${pendingExpenses.length})</div>
+        ${pendingExpenses.map(e => `<div class="notif-item">${esc(e.description)} · ${money(e.amount)}</div>`).join('')}
+      </div>` : ''}
+      ${!overdueTasks.length && !reviewTasks.length && !pendingLeaves.length && !pendingExpenses.length ? `<div class="notif-empty">All clear — no pending notifications.</div>` : ''}
+    </div>`;
+  }
+
+  function renderPage() {
+    const routes = {
+      dashboard: renderDashboard,
+      clients: renderClients,
+      workflow: renderWorkflow,
+      review: renderReviewQueue,
+      bd: renderBD,
+      finance: renderFinance,
+      hr: renderHR,
+      documents: renderDocuments,
+      team: renderTeam,
+      ai: renderAI,
+      marketing: renderMarketing,
+      global: renderGlobal,
+      audit: renderAudit,
+      admin: renderAdmin,
+      settings: renderSettings
+    };
+    if (!hasRouteAccess(state.route)) return renderAccessDenied(state.route);
+    return (routes[state.route] || renderDashboard)();
+  }
+
+
+  function renderKaiWidget() {
+    const quick = isLowerRole()
+      ? ['What should I work on next?', 'Which of my tasks are overdue?', 'Give me a quality checklist']
+      : ['Generate an executive summary', 'Which clients need attention?', 'Who is overloaded?', 'What is missing for MVP?'];
+    const modeLabel = state.aiMode === 'live' ? 'Gemini live' : state.aiMode === 'policy' ? 'Policy-safe' : 'Local fallback';
+    const messages = state.aiChat.slice(-8);
+    if (!state.aiWidgetOpen) {
+      return `<button class="kai-launcher" data-action="toggle-kai" title="Open KAI Copilot">
+        <span>🤖</span><b>KAI</b>
+      </button>`;
+    }
+    const body = messages.length
+      ? messages.map(msg => msg.role === 'user'
+          ? `<div class="kai-msg kai-user"><div>${esc(msg.text)}</div></div>`
+          : `<div class="kai-msg kai-assistant"><div>${msg.blocked ? '<div class="chat-policy">🔒 Policy block</div>' : ''}${renderAIReport(msg.text)}${msg.mode ? `<span class="kai-meta">${msg.mode === 'live' ? 'Gemini' : 'Local'} · role-filtered</span>` : ''}</div></div>`
+        ).join('')
+      : `<div class="kai-empty">
+          <b>KAI Copilot</b>
+          <span>Ask about tasks, clients, workload, quality, BD, finance, or MVP improvements. Answers use only data your role can see.</span>
+        </div>`;
+    return `<section class="kai-widget" aria-label="KrestonFlow AI chatbot">
+      <div class="kai-head">
+        <div><b>KAI Copilot</b><span>${esc(state.user.role)} · ${esc(modeLabel)}</span></div>
+        <div class="kai-head-actions">
+          <button data-action="route" data-route="ai" title="Open full copilot">↗</button>
+          <button data-action="toggle-kai" title="Minimize">—</button>
+        </div>
+      </div>
+      <div class="kai-quick">
+        ${quick.map(q => `<button data-action="kai-suggest" data-text="${esc(q)}">${esc(q)}</button>`).join('')}
+      </div>
+      <div class="kai-messages" id="kaiMessages">
+        ${body}
+        ${state.aiLoading ? '<div class="kai-msg kai-assistant"><div class="kai-typing"><span></span><span></span><span></span></div></div>' : ''}
+      </div>
+      <div class="kai-input">
+        <textarea id="kaiQuestion" rows="1" placeholder="Ask KAI anything role-safe..."></textarea>
+        <button data-action="ask-kai" ${state.aiLoading ? 'disabled' : ''}>Send</button>
+      </div>
+    </section>`;
+  }
+
+  function renderLogin() {
+    const demoUsers = [
+      { email: 'admin@kreston.demo', role: 'Admin', dept: 'IT' },
+      { email: 'partner@kreston.demo', role: 'Partner', dept: 'Leadership' },
+      { email: 'manager.audit@kreston.demo', role: 'Manager', dept: 'Audit' },
+      { email: 'senior.audit@kreston.demo', role: 'Senior', dept: 'Audit' },
+      { email: 'manager.tax@kreston.demo', role: 'Manager', dept: 'Tax' },
+      { email: 'junior.audit@kreston.demo', role: 'Junior', dept: 'Audit' }
+    ];
+    app.innerHTML = `
+      <section class="login-page">
+        <div class="login-shell">
+          <div class="login-hero">
+            <div class="login-logo">
+              <div class="logo-mark">K</div>
+              <div>
+                <div class="logo-title">KrestonFlow AI</div>
+                <div class="logo-subtitle">Internal CRM & Workflow Platform</div>
+              </div>
+            </div>
+            <h1>Enterprise workflow, client intelligence, and AI supervision — in one platform.</h1>
+            <p>Built for the Kreston Albania hackathon: role-based hierarchy, Client 360, workflow approvals, finance, HR, BD pipeline, documents, and Gemini Copilot.</p>
+            <div class="login-services">
+              <span class="pill teal">Audit & Advisory</span>
+              <span class="pill blue">Tax & Accounting</span>
+              <span class="pill purple">HR Module</span>
+              <span class="pill green">BD Pipeline</span>
+              <span class="pill orange">Finance Control</span>
+            </div>
+            <div class="login-points">
+              <div class="login-point"><b>Hierarchical visibility</b><br><span>Partner → Manager → Senior → Junior → Intern</span></div>
+              <div class="login-point"><b>Client 360</b><br><span>Lead → Proposal → Contract → Delivery → Renewal</span></div>
+              <div class="login-point"><b>Full CRUD workflow</b><br><span>Tasks, clients, proposals, expenses, leave requests</span></div>
+              <div class="login-point"><b>Gemini Copilot</b><br><span>Role-safe AI — blocked for unauthorized data</span></div>
+            </div>
+          </div>
+          <div class="login-card">
+            <div class="eyebrow">Secure demo login</div>
+            <h1 style="font-size:28px; margin-bottom:4px;">Sign in</h1>
+            <p style="color:#64748b; margin-bottom:20px; font-size:14px;">Use any demo account below</p>
+            <form data-form="login" class="stack">
+              <label><span class="label">Email address</span><input class="input" name="email" value="admin@kreston.demo" autocomplete="username" placeholder="Email"></label>
+              <label><span class="label">Password</span><input class="input" name="password" type="password" value="${PASS}" autocomplete="current-password"></label>
+              <button class="btn" type="submit" style="padding:14px; font-size:16px;">Sign in to platform</button>
+            </form>
+            <div class="divider"></div>
+            <div class="card-title" style="margin-bottom:4px;">Quick demo accounts</div>
+            <div class="card-subtitle" style="margin-bottom:12px;">Password: <b>${PASS}</b></div>
+            <div class="quick-users">
+              ${demoUsers.map(u => `<button data-action="quick-login" data-email="${u.email}">
+                <div class="user-avatar-sm">${u.email[0].toUpperCase()}</div>
+                <div>
+                  <div style="font-weight:600; font-size:13px;">${u.email.split('@')[0]}</div>
+                  <div style="color:#64748b; font-size:11px;">${u.role} · ${u.dept}</div>
+                </div>
+              </button>`).join('')}
+            </div>
+          </div>
+        </div>
+      </section>`;
+  }
+
+  function renderDashboard() {
+    const tasks = visibleTasks();
+    const clients = visibleClients();
+    const openTasks = tasks.filter(t => !['Approved', 'Delivered'].includes(t.status));
+    const overdue = tasks.filter(isOverdue);
+    const highRiskClients = clients.filter(c => clientRisk(c) >= 65);
+    const pipeline = hasRouteAccess('bd') ? visibleProposals().reduce((s, p) => s + p.value * (p.probability / 100), 0) : null;
+    const myOpenTasks = tasks.filter(t => t.assigneeId === state.user.id && !['Approved','Delivered'].includes(t.status)).length;
+    const completed = tasks.filter(t => ['Approved', 'Delivered'].includes(t.status)).length;
+    const completionRate = tasks.length ? Math.round(completed / tasks.length * 100) : 0;
+    const deptLoad = DEPARTMENTS.map(dep => ({ dep, count: tasks.filter(t => t.department === dep && !['Approved','Delivered'].includes(t.status)).length })).filter(x => x.count > 0);
+    const riskRows = clients.map(c => ({ c, risk: clientRisk(c) })).sort((a,b) => b.risk - a.risk).slice(0, 5);
+    const renewalClients = clients.filter(c => { const d = Math.ceil((new Date(c.contractEnd) - new Date(todayISO(0)))/86400000); return d >= 0 && d <= 45; });
+
+    return `
+      ${renderAccessSummary()}
+      ${renewalClients.length ? `<div class="renewal-bar">
+        <b>⚠ Contract renewals approaching:</b>
+        ${renewalClients.map(c => { const d = Math.ceil((new Date(c.contractEnd)-new Date(todayISO(0)))/86400000); return `<span class="renewal-chip" data-action="select-client-route" data-id="${c.id}">${esc(c.name)} — ${d} days</span>`; }).join('')}
+      </div>` : ''}
+      ${overdue.length ? `<div class="overdue-bar">
+        <b>🔴 ${overdue.length} overdue task${overdue.length > 1 ? 's' : ''}:</b>
+        ${overdue.slice(0, 4).map(t => `<span>${esc(t.title)} (${esc(userName(t.assigneeId))})</span>`).join(' · ')}
+        <button class="btn small secondary" data-action="route" data-route="workflow" style="margin-left:auto;">View workflow</button>
+      </div>` : ''}
+      <div class="grid cols-4">
+        ${kpi('🏢', clients.length, 'Visible clients', 'Client records in your scope', 'teal')}
+        ${kpi('✅', openTasks.length, 'Open tasks', `${overdue.length} overdue`, overdue.length ? 'bad' : 'good')}
+        ${kpi('📈', pct(completionRate), 'Completion rate', 'Approved or delivered', completionRate >= 70 ? 'good' : 'warn')}
+        ${hasRouteAccess('bd') ? kpi('💼', money(pipeline), 'Weighted pipeline', 'Forecasted BD value', 'blue') : kpi('🧾', myOpenTasks, 'My active tasks', 'Execution scope', 'blue')}
+      </div>
+      <div class="grid cols-3" style="margin-top:16px; align-items:start;">
+        <section class="card" style="grid-column: span 2;">
+          <div class="between">
+            <div><div class="card-title">Operational workload by department</div><div class="card-subtitle">Open tasks grouped across visible hierarchy.</div></div>
+            <button class="btn small secondary" data-action="route" data-route="workflow">Open workflow</button>
+          </div>
+          ${deptLoad.length ? barChart(deptLoad.map(x => [x.dep, x.count, Math.max(...deptLoad.map(d => d.count), 1)])) : `<div class="empty">No open tasks in your current scope.</div>`}
+        </section>
+        <section class="card dark">
+          <div class="card-title">AI Scope Snapshot</div>
+          <div class="card-subtitle" style="color:rgba(255,255,255,.6);">Generated from your permitted data only.</div>
+          <div class="ai-report" style="background:rgba(255,255,255,.08); color:#e2e8f0;">${esc(generateExecutiveSummary())}</div>
+        </section>
+      </div>
+      <div class="grid cols-2" style="margin-top:16px; align-items:start;">
+        <section class="card">
+          ${hasRouteAccess('clients') ? `<div class="between"><div><div class="card-title">Highest-risk clients</div><div class="card-subtitle">Risk combines contract renewal, overdue tasks, and priority.</div></div><button class="btn small secondary" data-action="route" data-route="clients">Client 360</button></div>
+          <div class="stack">
+            ${riskRows.map(({c, risk}) => `
+              <div class="client-item" data-action="select-client-route" data-id="${c.id}">
+                <div class="between"><b>${esc(c.name)}</b><span class="pill ${riskColor(risk >= 65 ? 'High' : risk >= 40 ? 'Medium' : 'Low')}">${risk}/100</span></div>
+                <div class="task-meta">${esc(c.industry)} · ${esc(c.status)} · Contract ends ${fmtDate(c.contractEnd)}</div>
+                <div class="progress" style="margin-top:8px;"><span style="width:${c.progress}%"></span></div>
+              </div>`).join('')}
+          </div>` : `<div class="card-title">Client 360 restricted</div><div class="card-subtitle">Lower ranked members see only client names linked to their assigned tasks.</div><div class="empty">Associate level and above can access full client portfolio.</div>`}
+        </section>
+        <section class="card">
+          <div class="between"><div><div class="card-title">Recent priority work</div><div class="card-subtitle">Tasks most relevant to your current scope.</div></div>${canCreateTask() ? '<button class="btn small" data-action="open-task-modal">+ Task</button>' : ''}</div>
+          <div class="table-wrap">
+            <table><thead><tr><th>Task</th><th>Client</th><th>Owner</th><th>Status</th><th>Due</th></tr></thead><tbody>
+              ${tasks.sort((a,b) => (isOverdue(b)-isOverdue(a)) || (a.dueDate > b.dueDate ? 1 : -1)).slice(0, 7).map(t => taskRow(t)).join('')}
+            </tbody></table>
+          </div>
+        </section>
+      </div>
+      ${!isSeniorLevel() ? `<section class="card" style="margin-top:16px;">
+        <div class="between">
+          <div><div class="card-title">My work queue</div><div class="card-subtitle">Your assigned tasks — sorted by urgency and due date.</div></div>
+          <button class="btn small secondary" data-action="route" data-route="workflow">View all</button>
+        </div>
+        ${tasks.filter(t => t.assigneeId === state.user.id || t.reviewerId === state.user.id).length ? `
+        <div class="grid cols-2" style="margin-top:12px; align-items:start;">
+          <div class="stack">
+            ${tasks.filter(t => (t.assigneeId === state.user.id || t.reviewerId === state.user.id) && !['Approved','Delivered'].includes(t.status))
+              .sort((a,b) => (isOverdue(b)-isOverdue(a)) || (a.dueDate > b.dueDate ? 1 : -1))
+              .slice(0, 5).map(t => taskCard(t)).join('') || '<div class="empty">All caught up!</div>'}
+          </div>
+          <div class="stack">
+            <div class="ai-box">
+              <h3>📋 Quick status</h3>
+              <p>You have <b>${tasks.filter(t => t.assigneeId === state.user.id && !['Approved','Delivered'].includes(t.status)).length}</b> open assignments and <b>${tasks.filter(t => t.reviewerId === state.user.id && ['Submitted','Under Review'].includes(t.status)).length}</b> items awaiting your review.</p>
+              ${tasks.filter(t => isOverdue(t) && t.assigneeId === state.user.id).length ? `<p style="color:#fca5a5;">⚠ You have <b>${tasks.filter(t => isOverdue(t) && t.assigneeId === state.user.id).length}</b> overdue task${tasks.filter(t => isOverdue(t) && t.assigneeId === state.user.id).length > 1 ? 's' : ''} — action needed.</p>` : '<p style="color:#6ee7b7;">✅ No overdue work. Keep it up!</p>'}
+            </div>
+            ${canCreateDocument() ? `<div class="card flat">
+              <div class="card-title">Quick actions</div>
+              <div class="stack" style="margin-top:8px;">
+                <button class="btn secondary" data-action="route" data-route="documents" style="width:100%;">📁 Add document</button>
+                <button class="btn secondary" data-action="route" data-route="ai" style="width:100%;">🤖 Ask Copilot</button>
+                ${canCreateTask() ? `<button class="btn secondary" data-action="open-task-modal" style="width:100%;">✅ New task</button>` : ''}
+              </div>
+            </div>` : ''}
+          </div>
+        </div>` : '<div class="empty" style="margin-top:16px;">No tasks assigned to you yet.</div>'}
+      </section>` : ''}`;
+  }
+
+  function kpi(icon, value, label, sub, trend = 'good') {
+    const cls = trend === 'bad' ? 'bad' : trend === 'warn' ? 'warn' : '';
+    return `<section class="card kpi"><div><div class="kpi-value">${value}</div><div class="kpi-label">${label}</div><div class="kpi-trend ${cls}">${sub}</div></div><div class="kpi-icon">${icon}</div></section>`;
+  }
+
+  function barChart(rows) {
+    return `<div class="bar-chart">${rows.map(([label, value, max]) => `<div class="bar-row"><div>${esc(label)}</div><div class="bar"><span style="width:${Math.min(100, (value/max)*100)}%"></span></div><b>${value}</b></div>`).join('')}</div>`;
+  }
+
+  function taskRow(t) {
+    return `<tr>
+      <td><b>${esc(t.title)}</b><div class="task-meta">${esc(t.department)} · ${esc(t.priority)} priority</div></td>
+      <td>${esc(clientName(t.clientId))}</td>
+      <td>${esc(userName(t.assigneeId))}</td>
+      <td><span class="pill ${statusPill(t.status)}">${esc(t.status)}</span></td>
+      <td>${fmtDate(t.dueDate)} ${isOverdue(t) ? '<span class="pill red">Overdue</span>' : ''}</td>
+    </tr>`;
+  }
+
+  function statusPill(status) {
+    if (status === 'Delivered' || status === 'Approved') return 'green';
+    if (status === 'Under Review' || status === 'Submitted') return 'blue';
+    if (status === 'In Progress') return 'teal';
+    return 'gray';
+  }
+
+  function renderClients() {
+    const clients = visibleClients();
+    let selected = byId(clients, state.selectedClientId) || clients[0] || null;
+    if (selected) state.selectedClientId = selected.id;
+    return `
+      <div class="searchbar">
+        <input class="input" data-action="filter" data-key="search" placeholder="Search clients, industries, status..." value="${esc(state.filters.search)}">
+        <select data-action="filter" data-key="status"><option>All</option>${['Active Client','Proposal Sent','Onboarding','Renewal Discussion'].map(s => `<option ${state.filters.status === s ? 'selected' : ''}>${s}</option>`).join('')}</select>
+        ${canCreateClient() ? '<button class="btn" data-action="open-client-modal">+ New Client</button>' : ''}
+      </div>
+      <div class="client-layout">
+        <section class="card">
+          <div class="card-title">Client portfolio</div>
+          <div class="card-subtitle">Click a client to view full lifecycle and risk.</div>
+          <div class="list-card">
+            ${clients.filter(c => clientFilter(c)).map(c => clientListItem(c, selected?.id)).join('') || '<div class="empty">No clients match your filters.</div>'}
+          </div>
+        </section>
+        <section>
+          ${selected ? renderClientDetail(selected) : '<div class="empty">No client selected.</div>'}
+        </section>
+      </div>`;
+  }
+
+  function clientFilter(c) {
+    const q = state.filters.search.toLowerCase();
+    const statusOk = state.filters.status === 'All' || c.status === state.filters.status;
+    const qOk = !q || [c.name, c.industry, c.contact, c.status, c.leadSource].join(' ').toLowerCase().includes(q);
+    return statusOk && qOk;
+  }
+
+  function clientListItem(c, selectedId) {
+    const risk = clientRisk(c);
+    return `<div class="client-item ${selectedId === c.id ? 'active' : ''}" data-action="select-client" data-id="${c.id}">
+      <div class="between"><b>${esc(c.name)}</b><span class="pill ${riskColor(risk >= 65 ? 'High' : risk >= 40 ? 'Medium' : 'Low')}">${risk}</span></div>
+      <div class="task-meta">${esc(c.industry)} · ${esc(c.status)}</div>
+      <div class="progress" style="margin-top:8px;"><span style="width:${c.progress}%"></span></div>
+    </div>`;
+  }
+
+  function renderClientDetail(c) {
+    const tasks = state.db.tasks.filter(t => t.clientId === c.id && visibleTasks().some(v => v.id === t.id));
+    const docs = visibleDocuments().filter(d => d.clientId === c.id);
+    const risk = clientRisk(c);
+    const days = Math.ceil((new Date(c.contractEnd) - new Date(todayISO(0))) / 86400000);
+    const journeyStages = ['Lead', 'Proposal', 'Contract', 'Onboarding', 'Delivery', 'Renewal'];
+    const currentStage = Math.min(5, Math.ceil(c.progress / 17));
+    return `
+      <div class="grid cols-3">
+        <section class="card" style="grid-column: span 2;">
+          <div class="between">
+            <div><div class="card-title">${esc(c.name)}</div><div class="card-subtitle">${esc(c.industry)} · ${esc(c.contact)} · ${esc(c.email)}</div></div>
+            <div class="row">
+              <span class="pill ${riskColor(risk >= 65 ? 'High' : risk >= 40 ? 'Medium' : 'Low')}">Risk ${risk}/100</span>
+              ${canEditClient(c) ? `<button class="btn small secondary" data-action="open-edit-client" data-id="${c.id}">Edit</button>` : ''}
+            </div>
+          </div>
+          <div class="info-grid" style="margin-top:12px;">
+            <div><div class="task-meta">Status</div><b>${esc(c.status)}</b></div>
+            <div><div class="task-meta">Contract value</div><b>${canSeeCommercialData() ? money(c.value) : '🔒 Restricted'}</b></div>
+            <div><div class="task-meta">Contract end</div><b>${fmtDate(c.contractEnd)} <span class="pill ${days <= 14 ? 'red' : days <= 45 ? 'orange' : 'green'}">${days}d</span></b></div>
+            <div><div class="task-meta">Relationship manager</div><b>${esc(userName(c.relationshipManagerId))}</b></div>
+            <div><div class="task-meta">Lead source</div><b>${esc(c.leadSource)}</b></div>
+            <div><div class="task-meta">Services</div><b>${esc(c.services.join(', '))}</b></div>
+          </div>
+          <div class="divider"></div>
+          <div class="card-title">Client journey</div>
+          <div class="journey-steps">
+            ${journeyStages.map((s, i) => `
+              <div class="journey-step ${i < currentStage ? 'done' : i === currentStage ? 'current' : ''}">
+                <div class="journey-dot">${i < currentStage ? '✓' : i + 1}</div>
+                <div class="journey-label">${s}</div>
+              </div>
+              ${i < journeyStages.length - 1 ? '<div class="journey-line"></div>' : ''}
+            `).join('')}
+          </div>
+          ${c.notes ? `<div class="card-note" style="margin-top:12px;">📝 ${esc(c.notes)}</div>` : ''}
+        </section>
+        <section class="ai-box">
+          <h3>AI Client Recommendation</h3>
+          <p>${esc(clientNextAction(c, risk, days))}</p>
+          <div class="divider"></div>
+          <div class="metric-ring" style="--pct:${risk};"><span>${risk}</span></div>
+          <div class="card-subtitle" style="text-align:center; margin-top:8px;">Risk index</div>
+          ${canCreateTask() ? `<button class="btn" style="width:100%; margin-top:12px;" data-action="create-client-followup" data-id="${c.id}">Create follow-up task</button>` : '<div class="empty compact" style="margin-top:12px;">Follow-up creation requires Senior or above.</div>'}
+        </section>
+      </div>
+      <div class="grid cols-2" style="margin-top:16px; align-items:start;">
+        <section class="card">
+          <div class="between"><div><div class="card-title">Client tasks</div><div class="card-subtitle">Visible tasks for this client.</div></div>${canCreateTask() ? `<button class="btn small" data-action="open-task-modal" data-client="${c.id}">+ Task</button>` : ''}</div>
+          ${tasks.length ? `<div class="table-wrap"><table><thead><tr><th>Task</th><th>Owner</th><th>Status</th><th>Risk</th></tr></thead><tbody>${tasks.map(t => `<tr><td><b>${esc(t.title)}</b><div class="task-meta">Due ${fmtDate(t.dueDate)}</div></td><td>${esc(userName(t.assigneeId))}</td><td><span class="pill ${statusPill(t.status)}">${esc(t.status)}</span></td><td><span class="pill ${riskColor(taskRisk(t))}">${taskRisk(t)}</span></td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">No tasks for this client.</div>'}
+        </section>
+        <section class="card">
+          <div class="between"><div><div class="card-title">Documents & versions</div></div><button class="btn small secondary" data-action="route" data-route="documents">All docs</button></div>
+          <div class="stack">${docs.map(d => docCard(d)).join('') || '<div class="empty">No documents yet.</div>'}</div>
+        </section>
+      </div>`;
+  }
+
+  function clientNextAction(c, risk, days) {
+    if (risk >= 70) return `High priority: assign manager follow-up, review overdue tasks, and prepare partner summary for ${c.name}.`;
+    if (days <= 14) return `Contract expires in ${days} days. Schedule renewal call and prepare updated service proposal immediately.`;
+    if (days <= 45) return `Contract renewal approaching (${days} days). Prepare renewal packet and update pricing with relationship manager.`;
+    if (c.status === 'Proposal Sent') return 'Proposal is pending. Trigger BD follow-up and attach latest meeting notes to client history.';
+    if (c.status === 'Onboarding') return 'Complete onboarding checklist, collect required documents, and assign delivery team owners.';
+    return 'Client is stable. Continue scheduled service delivery and monitor upcoming deadlines.';
+  }
+
+  function renderReviewQueue() {
+    const queue = reviewQueueTasks().sort((a,b) => new Date(a.dueDate || todayISO()) - new Date(b.dueDate || todayISO()));
+    const sentBack = visibleTasks().filter(t => t.assigneeId === state.user.id && ['Draft','In Progress'].includes(t.status) && t.reviewNote);
+    return `
+      <div class="grid cols-4">
+        ${kpi('🧾', queue.length, 'Waiting for review', 'Submitted or under review', queue.length ? 'warn' : 'good')}
+        ${kpi('⏰', queue.filter(isOverdue).length, 'Overdue in queue', 'Needs immediate action', queue.filter(isOverdue).length ? 'bad' : 'good')}
+        ${kpi('⭐', queue.filter(t => Number(t.quality || 0) < 78).length, 'Quality checks', 'Low quality / needs feedback', 'blue')}
+        ${kpi('✅', visibleTasks().filter(t => ['Approved','Delivered'].includes(t.status)).length, 'Approved visible tasks', 'Completed approval chain', 'good')}
+      </div>
+      <section class="card" style="margin-top:16px;">
+        <div class="between">
+          <div>
+            <div class="card-title">Review Queue</div>
+            <div class="card-subtitle">Submitted work from lower hierarchy or assigned reviewers. Approve, send back, or open the task for edit.</div>
+          </div>
+          <button class="btn secondary" data-action="route" data-route="workflow">Open workflow board</button>
+        </div>
+        ${queue.length ? `<div class="table-wrap"><table><thead><tr><th>Task</th><th>Client</th><th>Assignee</th><th>Status</th><th>Due</th><th>Quality</th><th>Actions</th></tr></thead><tbody>
+          ${queue.map(t => `<tr>
+            <td><b>${esc(t.title)}</b><div class="task-meta">${esc(t.department)} · ${esc(t.priority)} priority</div></td>
+            <td>${esc(clientName(t.clientId))}</td>
+            <td>${esc(userName(t.assigneeId))}</td>
+            <td><span class="pill ${statusPill(t.status)}">${esc(t.status)}</span></td>
+            <td>${fmtDate(t.dueDate)} ${isOverdue(t) ? '<span class="pill red">Overdue</span>' : ''}</td>
+            <td>${Number(t.quality || 0)}/100</td>
+            <td><div class="row">
+              <button class="btn small secondary" data-action="send-back-task" data-id="${t.id}">Send back</button>
+              <button class="btn small success" data-action="open-approve" data-id="${t.id}">Approve</button>
+              ${canEditTask(t) ? `<button class="btn small secondary" data-action="open-edit-task" data-id="${t.id}">Edit</button>` : ''}
+            </div></td>
+          </tr>`).join('')}
+        </tbody></table></div>` : '<div class="empty">No submitted work is waiting for your review.</div>'}
+      </section>
+      ${sentBack.length ? `<section class="card" style="margin-top:16px;"><div class="card-title">Sent-back tasks for you</div>${sentBack.map(t => `<div class="client-item"><b>${esc(t.title)}</b><div class="task-meta">Reviewer note: ${esc(t.reviewNote)}</div></div>`).join('')}</section>` : ''}`;
+  }
+
+  function renderWorkflow() {
+    const tasks = filteredTasks(visibleTasks());
+    const overdue = tasks.filter(isOverdue);
+    return `
+      <div class="searchbar">
+        <input class="input" data-action="filter" data-key="search" placeholder="Search task, client, owner..." value="${esc(state.filters.search)}">
+        <select data-action="filter" data-key="department"><option>All</option>${DEPARTMENTS.map(d => `<option ${state.filters.department === d ? 'selected' : ''}>${d}</option>`).join('')}</select>
+        ${canCreateTask() ? '<button class="btn" data-action="open-task-modal">+ New Task</button>' : ''}
+      </div>
+      ${overdue.length ? `<div class="overdue-bar">
+        <b>🔴 ${overdue.length} overdue:</b> ${overdue.slice(0,3).map(t => esc(t.title)).join(' · ')}
+      </div>` : ''}
+      <div class="kanban">
+        ${STATUS.map(status => {
+          const col = tasks.filter(t => t.status === status);
+          return `<section class="lane">
+            <div class="lane-title">
+              <span>${status}</span>
+              <span class="pill gray">${col.length}</span>
+            </div>
+            ${col.length ? col.map(taskCard).join('') : '<div class="lane-empty">No tasks in this column</div>'}
+          </section>`;
+        }).join('')}
+      </div>`;
+  }
+
+  function filteredTasks(tasks) {
+    const q = state.filters.search.toLowerCase();
+    return tasks.filter(t => {
+      const deptOk = state.filters.department === 'All' || t.department === state.filters.department;
+      const statusOk = state.filters.status === 'All' || t.status === state.filters.status;
+      const qOk = !q || [t.title, t.description, clientName(t.clientId), userName(t.assigneeId), t.department].join(' ').toLowerCase().includes(q);
+      return deptOk && statusOk && qOk;
+    });
+  }
+
+  function canApprove(t) {
+    if (!t || !state.user) return false;
+    if (['Admin', 'Partner'].includes(state.user.role)) return true;
+    if (t.reviewerId === state.user.id) return true;
+    const assignee = byId(state.db.users, t.assigneeId);
+    return !!(assignee && canSeeUser(state.user, assignee) && roleLevel(state.user.role) > roleLevel(assignee.role));
+  }
+
+  function allowedTaskStatusesForCurrentUser(t) {
+    if (!t || !state.user) return ['Draft'];
+    if (canApprove(t)) return STATUS;
+    if (t.assigneeId === state.user.id) return ['Draft', 'In Progress', 'Submitted'].filter(st => statusIndex(st) <= Math.max(statusIndex(t.status), STATUS.indexOf('Submitted')));
+    return [t.status];
+  }
+
+  function taskCard(t) {
+    const risk = taskRisk(t).toLowerCase();
+    const nextDisabled = !canMoveForward(t);
+    const prevDisabled = !canMoveBack(t);
+    const nextLabel = t.assigneeId === state.user.id && !canApprove(t) ? 'Submit →' : 'Next →';
+    return `<article class="task-card ${risk}">
+      <div class="between"><div class="task-title">${esc(t.title)}</div><span class="pill ${riskColor(taskRisk(t))}">${taskRisk(t)}</span></div>
+      <div class="task-meta">${esc(clientName(t.clientId))} · ${esc(t.department)}</div>
+      <div class="task-meta">Owner: <b>${esc(userName(t.assigneeId))}</b> · Reviewer: ${esc(userName(t.reviewerId))}</div>
+      <div class="task-meta">Due: ${fmtDate(t.dueDate)} ${isOverdue(t) ? '<span class="pill red">Overdue</span>' : ''}</div>
+      <div class="progress" style="margin:10px 0;"><span style="width:${Math.max(t.progress, completionByStatus(t.status))}%"></span></div>
+      <div class="row">
+        ${canEditTask(t) ? `<button class="btn small secondary" data-action="open-edit-task" data-id="${t.id}">Edit</button>` : ''}
+        <button class="btn small secondary" data-action="back-task" data-id="${t.id}" ${prevDisabled ? 'disabled' : ''}>← Back</button>
+        <button class="btn small" data-action="advance-task" data-id="${t.id}" ${nextDisabled ? 'disabled' : ''}>${nextLabel}</button>
+        ${['Submitted','Under Review'].includes(t.status) && canApprove(t) ? `<button class="btn small success" data-action="open-approve" data-id="${t.id}">Approve</button>` : ''}
+      </div>
+      ${t.signature ? `<div class="task-meta" style="margin-top:8px;">✅ Signed by ${esc(userName(t.approvedBy))}</div>` : ''}
+    </article>`;
+  }
+
+  function renderBD() {
+    const proposals = visibleProposals();
+    const total = proposals.reduce((s,p) => s + p.value, 0);
+    const weighted = proposals.reduce((s,p) => s + p.value * p.probability/100, 0);
+    const avgProb = proposals.length ? proposals.reduce((s,p) => s+p.probability,0)/proposals.length : 0;
+    const stale = proposals.filter(p => p.ageDays > 14).length;
+    return `
+      ${renderAccessSummary()}
+      <div class="grid cols-4">
+        ${kpi('💼', money(total), 'Total pipeline value', 'All active BD proposals', 'blue')}
+        ${kpi('🎯', money(weighted), 'Weighted forecast', 'Probability-adjusted', 'good')}
+        ${kpi('📊', pct(avgProb), 'Avg probability', 'Lead-to-client signal', 'teal')}
+        ${kpi('⏰', stale, 'Stale proposals', 'Need follow-up >14d', stale ? 'warn' : 'good')}
+      </div>
+      <div class="grid cols-2" style="margin-top:16px; align-items:start;">
+        <section class="card">
+          <div class="between">
+            <div><div class="card-title">Pipeline board</div><div class="card-subtitle">All active and closed proposals.</div></div>
+            ${canManageBD() ? '<button class="btn" data-action="open-bd-modal">+ New Proposal</button>' : ''}
+          </div>
+          <div class="stack">
+            ${proposals.map(p => `
+              <div class="client-item">
+                <div class="between">
+                  <div>
+                    <b>${esc(p.client)}</b>
+                    <span class="pill ${p.stage === 'Contract Signed' ? 'green' : p.stage === 'Lost' ? 'red' : 'blue'}" style="margin-left:8px;">${esc(p.stage)}</span>
+                  </div>
+                  <span class="pill teal">${pct(p.probability)}</span>
+                </div>
+                <div class="task-meta">${esc(p.source)} · Owner: ${esc(userName(p.ownerId))} · ${p.ageDays}d ago</div>
+                ${p.notes ? `<div class="card-note" style="margin-top:6px;">${esc(p.notes)}</div>` : ''}
+                <div class="between" style="margin-top:10px;">
+                  <b>${money(p.value)}</b>
+                  <div class="row">
+                    ${canManageBD() ? `<button class="btn small secondary" data-action="open-bd-edit" data-id="${p.id}">Edit</button>` : ''}
+                    ${canCreateTask() ? `<button class="btn small secondary" data-action="proposal-followup" data-id="${p.id}">Follow-up task</button>` : ''}
+                    ${canManageBD() ? `<button class="btn small secondary" data-action="delete-proposal" data-id="${p.id}" title="Remove from pipeline" style="color:#dc2626;">✕</button>` : ''}
+                  </div>
+                </div>
+              </div>`).join('')}
+          </div>
+        </section>
+        <section class="card">
+          <div class="card-title">BD analytics</div>
+          <div class="card-subtitle">Pipeline by probability score.</div>
+          ${proposals.length ? barChart(proposals.map(p => [p.client, p.probability, 100])) : '<div class="empty">No proposals in your visible scope.</div>'}
+          <div class="divider"></div>
+          <div class="ai-box">
+            <h3>AI BD Recommendation</h3>
+            <p>${stale ? 'Prioritize stale proposals. Balkan Retail and Primavera Foods need partner-level follow-up calls due to high value and age above the safe threshold.' : 'Pipeline is healthy. Focus on increasing proposal probability through better follow-up notes and service scoping.'}</p>
+            <div class="divider"></div>
+            <div class="card-title">Stage funnel</div>
+            ${barChart(BD_STAGES.map(stage => [stage, proposals.filter(p => p.stage === stage).length, Math.max(...BD_STAGES.map(st => proposals.filter(p => p.stage === st).length), 1)]))}
+          </div>
+        </section>
+      </div>`;
+  }
+
+  function renderFinance() {
+    const revenue = state.db.budgets.reduce((s,b) => s + b.revenue, 0);
+    const actual = state.db.budgets.reduce((s,b) => s + b.actual, 0);
+    const forecast = state.db.budgets.reduce((s,b) => s + b.forecast, 0);
+    const margin = revenue ? Math.round((revenue - actual) / revenue * 100) : 0;
+    const pendingExpenses = state.db.expenses.filter(e => e.status === 'Pending');
+    const totalExpenses = state.db.expenses.reduce((s,e) => s + e.amount, 0);
+    return `
+      ${renderAccessSummary()}
+      <div class="grid cols-4">
+        ${kpi('💶', money(revenue), 'Revenue monitored', 'From finance system', 'good')}
+        ${kpi('🧾', money(actual), 'Actual expenses', 'Department cost centers', actual > forecast ? 'warn' : 'good')}
+        ${kpi('📉', money(forecast), 'Forecasted cost', 'Expected annual cost', 'blue')}
+        ${kpi('📌', pct(margin), 'Current margin', 'Revenue minus costs', margin < 30 ? 'warn' : 'good')}
+      </div>
+      <div class="grid cols-2" style="margin-top:16px; align-items:start;">
+        <section class="card">
+          <div class="card-title">Budget monitoring by department</div>
+          <div class="card-subtitle">Compare actual vs. budget and forecast.</div>
+          <div class="table-wrap"><table><thead><tr><th>Department</th><th>Budget</th><th>Actual</th><th>Revenue</th><th>Utilisation</th><th>Status</th></tr></thead><tbody>
+            ${state.db.budgets.map(b => {
+              const util = Math.round(b.actual / b.budget * 100);
+              return `<tr><td><b>${esc(b.department)}</b></td><td>${money(b.budget)}</td><td>${money(b.actual)}</td><td>${money(b.revenue)}</td><td>
+                <div class="score-bar"><div class="score-fill" style="width:${Math.min(util,100)}%; background:${util > 85 ? '#dc2626' : util > 70 ? '#d97706' : '#16a34a'};"></div></div>
+                <div class="task-meta">${util}%</div>
+              </td><td><span class="pill ${util > 85 ? 'red' : util > 70 ? 'orange' : 'green'}">${util > 85 ? 'Overrun risk' : util > 70 ? 'Watch' : 'Healthy'}</span></td></tr>`;
+            }).join('')}
+          </tbody></table></div>
+        </section>
+        <section class="card">
+          <div class="between">
+            <div><div class="card-title">Expense register</div><div class="card-subtitle">${pendingExpenses.length} pending approval · Total: ${money(totalExpenses)}</div></div>
+            ${canManageFinance() ? '<button class="btn" data-action="open-expense-modal">+ Add Expense</button>' : ''}
+          </div>
+          <div class="stack">
+            ${state.db.expenses.map(e => `
+              <div class="client-item">
+                <div class="between">
+                  <b>${esc(e.description)}</b>
+                  <span class="pill ${e.status === 'Approved' ? 'green' : 'orange'}">${esc(e.status)}</span>
+                </div>
+                <div class="task-meta">${esc(e.category)} · ${esc(e.department)} · ${fmtDate(e.date)}</div>
+                <div class="between" style="margin-top:6px;">
+                  <b>${money(e.amount)}</b>
+                  <div class="row">
+                    <span class="task-meta">By ${esc(userName(e.submittedBy))}</span>
+                    ${e.status === 'Pending' && canManageFinance() ? `<button class="btn small success" data-action="approve-expense" data-id="${e.id}">Approve</button>` : ''}
+                  </div>
+                </div>
+              </div>`).join('')}
+          </div>
+        </section>
+      </div>
+      <div class="grid cols-2" style="margin-top:16px;">
+        <section class="card">
+          <div class="card-title">Finance approval queue</div>
+          ${visibleTasks().filter(t => t.department === 'Internal Finance').map(taskCard).join('') || '<div class="empty">No finance approvals pending.</div>'}
+        </section>
+        <section class="card">
+          <div class="card-title">Profitability by service line</div>
+          ${barChart(state.db.budgets.filter(b => b.revenue > 0).map(b => [b.department, Math.max(0, b.revenue - b.actual), Math.max(...state.db.budgets.map(x => Math.max(0, x.revenue-x.actual)), 1)]))}
+        </section>
+      </div>`;
+  }
+
+  function renderHR() {
+    const users = visibleUsers();
+    const avgScore = users.length ? Math.round(users.reduce((s,u) => s + scoreEmployee(u.id).score, 0) / users.length) : 0;
+    const pendingLeaves = state.db.leaves.filter(l => l.status === 'Pending' && canSeeUser(state.user, byId(state.db.users, l.userId))).length;
+    return `
+      ${renderAccessSummary()}
+      <div class="grid cols-4">
+        ${kpi('👥', users.length, 'Visible employees', 'Based on hierarchy', 'teal')}
+        ${kpi('⭐', avgScore, 'Average performance', 'Quality + delivery + workload', avgScore < 70 ? 'warn' : 'good')}
+        ${kpi('🏖', pendingLeaves, 'Pending leave requests', 'Awaiting approval', pendingLeaves ? 'warn' : 'good')}
+        ${kpi('🎓', 7, 'Active trainings', 'Certification and onboarding plan', 'blue')}
+      </div>
+      <div class="grid cols-2" style="margin-top:16px; align-items:start;">
+        <section class="card">
+          <div class="card-title">Employee master data</div>
+          <div class="card-subtitle">Performance score and key metrics per employee.</div>
+          <div class="table-wrap"><table><thead><tr><th>Employee</th><th>Role</th><th>Dept</th><th>Score</th><th>Hire date</th></tr></thead><tbody>
+            ${users.map(u => {
+              const s = scoreEmployee(u.id);
+              return `<tr>
+                <td>
+                  <div class="user-row">
+                    <div class="user-avatar-sm">${esc(initials(u.name))}</div>
+                    <div>
+                      <b>${esc(u.name)}</b>
+                      <div class="task-meta">${esc(u.email)}</div>
+                    </div>
+                  </div>
+                </td>
+                <td><span class="pill ${roleColor(u.role)}">${esc(u.role)}</span></td>
+                <td>${esc(u.department)}</td>
+                <td>
+                  <div class="score-bar"><div class="score-fill" style="width:${s.score}%;"></div></div>
+                  <div class="task-meta">${s.score}/100</div>
+                </td>
+                <td>${fmtDate(u.hireDate)}</td>
+              </tr>`;
+            }).join('')}
+          </tbody></table></div>
+        </section>
+        <section class="card">
+          <div class="between">
+            <div><div class="card-title">Leave & training queue</div><div class="card-subtitle">Requests connected to workload and approvals.</div></div>
+            ${canManageHR() ? '<button class="btn" data-action="open-leave-modal">+ Request Leave</button>' : ''}
+          </div>
+          <div class="stack">
+            ${state.db.leaves.filter(l => canSeeUser(state.user, byId(state.db.users, l.userId))).map(l => `
+              <div class="client-item">
+                <div class="between">
+                  <b>${esc(userName(l.userId))}</b>
+                  <span class="pill ${l.status === 'Approved' ? 'green' : 'orange'}">${esc(l.status)}</span>
+                </div>
+                <div class="task-meta">${esc(l.type)} · ${fmtDate(l.from)} → ${fmtDate(l.to)}</div>
+                ${l.notes ? `<div class="task-meta" style="color:#64748b; margin-top:4px;">${esc(l.notes)}</div>` : ''}
+                <div class="between" style="margin-top:8px;">
+                  <span class="task-meta">Approver: ${esc(userName(l.approverId))}</span>
+                  ${l.status === 'Pending' && (canManageHR() || l.approverId === state.user.id) ? `<button class="btn small success" data-action="approve-leave" data-id="${l.id}">Approve</button>` : ''}
+                </div>
+              </div>`).join('') || '<div class="empty">No leave requests in your scope.</div>'}
+          </div>
+          <div class="divider"></div>
+          <div class="ai-box">
+            <h3>AI HR Insight</h3>
+            <p>Performance reviews should combine task completion rate, quality score, overdue work, and workload balance — not just raw task count. This gives a fairer signal for promotions and role changes.</p>
+          </div>
+        </section>
+      </div>`;
+  }
+
+  function renderDocuments() {
+    const docs = visibleDocuments();
+    return `
+      <div class="grid cols-3" style="align-items:start;">
+        <section class="card" style="grid-column: span 2;">
+          <div class="between">
+            <div><div class="card-title">Document library</div><div class="card-subtitle">Version control, client linking, and approval state.</div></div>
+            ${canCreateDocument() ? '<button class="btn" data-action="open-doc-modal">+ Add document</button>' : ''}
+          </div>
+          <div class="table-wrap"><table><thead><tr><th>Document</th><th>Client</th><th>Owner</th><th>Version</th><th>Status</th><th>Updated</th></tr></thead><tbody>
+            ${docs.map(d => `<tr>
+              <td><b>${esc(d.name)}</b><div class="task-meta">${esc(d.type)} · ${esc(d.size)}</div></td>
+              <td>${esc(clientName(d.clientId))}</td>
+              <td>${esc(userName(d.ownerId))}</td>
+              <td><span class="pill gray">${esc(d.version)}</span></td>
+              <td><span class="pill ${statusPill(d.status)}">${esc(d.status)}</span></td>
+              <td>${fmtDate(d.updatedAt)}</td>
+            </tr>`).join('')}
+          </tbody></table></div>
+        </section>
+        <section class="card">
+          <div class="card-title">Version control concept</div>
+          <div class="ai-box">
+            <h3>Smart document flow</h3>
+            <p>Every file is linked to client, owner, module, status, and version. Reviewers approve with digital signature and every update is logged in the audit trail.</p>
+          </div>
+          <div class="divider"></div>
+          <div class="stack">${docs.slice(0,3).map(docCard).join('')}</div>
+        </section>
+      </div>`;
+  }
+
+  function docCard(d) {
+    return `<div class="doc-item">
+      <div class="between"><b>${esc(d.name)}</b><span class="pill ${statusPill(d.status)}">${esc(d.status)}</span></div>
+      <div class="task-meta">${esc(clientName(d.clientId))} · ${esc(d.type)} · ${esc(d.version)} · ${esc(userName(d.ownerId))}</div>
+    </div>`;
+  }
+
+  function renderTeam() {
+    const users = visibleUsers().filter(u => u.role !== 'Admin');
+    const selected = byId(users, state.selectedEmployeeId) || users[0] || state.user;
+    state.selectedEmployeeId = selected.id;
+    const s = scoreEmployee(selected.id);
+    const employeeTasks = state.db.tasks.filter(t => t.assigneeId === selected.id);
+    return `
+      <div class="client-layout">
+        <section class="card">
+          <div class="card-title">Hierarchy view</div>
+          <div class="card-subtitle">Visible employees in your permission scope.</div>
+          <div class="list-card">
+            ${users.map(u => {
+              const sc = scoreEmployee(u.id);
+              return `<div class="employee-item ${selected.id === u.id ? 'active' : ''}" data-action="select-employee" data-id="${u.id}">
+                <div class="between"><b>${esc(u.name)}</b><span class="pill ${roleColor(u.role)}">${esc(u.role)}</span></div>
+                <div class="task-meta">${esc(u.department)} · ${esc(u.title)}</div>
+                <div class="score-bar" style="margin-top:8px;"><div class="score-fill" style="width:${sc.score}%;"></div></div>
+              </div>`;
+            }).join('')}
+          </div>
+        </section>
+        <section class="grid">
+          <div class="grid cols-4">
+            ${kpi('⭐', s.score, 'Performance score', 'Quality, delivery, workload', s.score < 70 ? 'warn' : 'good')}
+            ${kpi('✅', `${s.completed}/${s.total}`, 'Completed tasks', 'Approved or delivered', 'good')}
+            ${kpi('⏰', s.overdue, 'Overdue tasks', 'Needs attention', s.overdue ? 'bad' : 'good')}
+            ${kpi('📦', s.workload, 'Active workload', 'Open assignments', s.workload > 5 ? 'warn' : 'good')}
+          </div>
+          <section class="card">
+            <div class="between">
+              <div>
+                <div class="card-title">${esc(selected.name)} — performance profile</div>
+                <div class="card-subtitle">${esc(selected.title)} · ${esc(selected.department)} · ${esc(selected.email)}</div>
+              </div>
+              <button class="btn" data-action="generate-employee-report" data-id="${selected.id}">Generate AI report</button>
+            </div>
+            <div class="grid cols-3" style="margin-top:12px;">
+              <div class="metric-ring" style="--pct:${s.score};"><span>${s.score}</span></div>
+              <div class="card flat">
+                <div class="card-title">Skills</div>
+                <div class="row">${selected.skills.map(x => `<span class="pill teal">${esc(x)}</span>`).join('')}</div>
+                <div class="task-meta" style="margin-top:8px;">Hired: ${fmtDate(selected.hireDate)}</div>
+              </div>
+              <div class="card flat">
+                <div class="card-title">Recommendation</div>
+                <p class="task-meta">${esc(employeeRecommendation(selected.id))}</p>
+              </div>
+            </div>
+          </section>
+          <section class="card">
+            <div class="card-title">Assigned tasks</div>
+            ${employeeTasks.length ? `<div class="table-wrap"><table><thead><tr><th>Task</th><th>Client</th><th>Status</th><th>Quality</th><th>Due</th></tr></thead><tbody>
+              ${employeeTasks.map(t => `<tr>
+                <td><b>${esc(t.title)}</b></td>
+                <td>${esc(clientName(t.clientId))}</td>
+                <td><span class="pill ${statusPill(t.status)}">${esc(t.status)}</span></td>
+                <td>
+                  <div class="score-bar"><div class="score-fill" style="width:${t.quality}%;"></div></div>
+                  <div class="task-meta">${t.quality}/100</div>
+                </td>
+                <td>${fmtDate(t.dueDate)} ${isOverdue(t) ? '<span class="pill red">Overdue</span>' : ''}</td>
+              </tr>`).join('')}
+            </tbody></table></div>` : '<div class="empty">No tasks assigned.</div>'}
+          </section>
+          ${state.aiReport ? `<section class="card"><div class="card-title">AI Supervisor Report</div><div class="ai-report">${esc(state.aiReport)}</div></section>` : ''}
+        </section>
+      </div>`;
+  }
+
+  function employeeRecommendation(userId) {
+    const s = scoreEmployee(userId);
+    if (s.overdue >= 2) return 'Manager should reduce workload, check blockers, and prioritize overdue deliverables.';
+    if (s.score >= 88) return 'Strong performer. Candidate for more complex review tasks and client-facing responsibility.';
+    if (s.avgQuality < 75) return 'Quality improvement needed. Add senior review before manager approval.';
+    return 'Performance is stable. Keep workload balanced and continue regular review feedback.';
+  }
+
+  function renderAI() {
+    const allowed = aiCommands();
+    const modeBadge = state.aiMode === 'live' ? '<span class="badge badge-success">Gemini Live</span>'
+      : state.aiMode === 'policy' ? '<span class="badge badge-danger">Policy Restricted</span>'
+      : state.aiMode === 'fallback' ? '<span class="badge badge-warning">Local Engine</span>'
+      : '<span class="badge badge-neutral">Ready</span>';
+    const restricted = isLowerRole();
+    const suggestions = restricted
+      ? ['What should I work on next?', 'Which of my tasks are overdue?', 'What quality checks should I follow?']
+      : ['Generate a partner-ready executive summary', 'Which clients need attention this week?', 'Who on my team is overloaded?', 'Summarize the BD pipeline health'];
+
+    const chatBody = state.aiChat.length === 0
+      ? `<div class="chat-welcome">
+          <div class="chat-welcome-icon">◆</div>
+          <h2>KrestonFlow Copilot</h2>
+          <p>Your role-aware assistant. I only use data your account is permitted to see${restricted ? ' — task-focused guidance for your role.' : ', filtered by department and seniority.'}</p>
+          <div class="chat-suggestions">
+            ${suggestions.map(s => `<button class="chat-suggestion" data-action="ai-suggest" data-text="${esc(s)}">${esc(s)}</button>`).join('')}
+          </div>
+        </div>`
+      : state.aiChat.map(msg => msg.role === 'user'
+          ? `<div class="chat-msg chat-user"><div class="chat-bubble chat-bubble-user">${esc(msg.text)}</div></div>`
+          : `<div class="chat-msg chat-assistant">
+              <div class="chat-avatar">◆</div>
+              <div class="chat-bubble chat-bubble-assistant">
+                ${msg.blocked ? '<div class="chat-policy">🔒 Policy block</div>' : ''}
+                <div class="chat-content">${renderAIReport(msg.text)}</div>
+                ${msg.mode ? `<div class="chat-meta">${msg.mode === 'live' ? 'Gemini' : 'Local engine'} · role-filtered</div>` : ''}
+              </div>
+            </div>`
+        ).join('') + (state.aiLoading ? `<div class="chat-msg chat-assistant"><div class="chat-avatar">◆</div><div class="chat-bubble chat-bubble-assistant"><div class="chat-typing"><span></span><span></span><span></span></div></div></div>` : '');
+
+    return `
+      <div class="copilot-layout">
+        <aside class="copilot-sidebar">
+          <div class="copilot-side-head">
+            <div class="card-title" style="margin:0;">Quick prompts</div>
+            ${modeBadge}
+          </div>
+          <div class="copilot-commands">
+            ${allowed.map(([cmd,title,body]) => `
+              <button class="copilot-cmd" data-action="ai-command" data-command="${cmd}">
+                <div class="copilot-cmd-title">${title}</div>
+                <div class="copilot-cmd-desc">${body}</div>
+              </button>`).join('')}
+          </div>
+          <div class="copilot-policy">
+            ${restricted
+              ? '<div class="policy-note"><b>Restricted scope.</b> Finance, HR, BD, and firm-wide data are blocked for your role. You receive task-focused guidance only.</div>'
+              : '<div class="policy-note ok"><b>Scoped access.</b> Answers are filtered to the clients, tasks, and teams your account can see.</div>'}
+          </div>
+          ${state.aiChat.length ? '<button class="btn secondary block" data-action="clear-ai">Clear conversation</button>' : ''}
+        </aside>
+        <section class="copilot-main">
+          <div class="copilot-chat" id="copilotChat">
+            ${chatBody}
+          </div>
+          <div class="copilot-composer">
+            <textarea id="aiQuestion" class="copilot-input" rows="1" placeholder="${restricted ? 'Ask about your tasks…' : 'Ask anything about your clients, team, or workflow…'}" ${state.aiLoading ? 'disabled' : ''}></textarea>
+            <button class="copilot-send" data-action="ask-ai" ${state.aiLoading ? 'disabled' : ''} title="Send">
+              ${state.aiLoading ? '⋯' : '↑'}
+            </button>
+          </div>
+          <div class="copilot-disclaimer">Copilot uses role-filtered data. Verify important decisions with source records.</div>
+        </section>
+      </div>`;
+  }
+
+  function normalizeAIText(text) {
+    let t = String(text || '')
+      .replace(/\r/g, '')
+      .replace(/\t/g, '  ')
+      .replace(/^[ \u00a0]+/gm, '')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+
+    // Gemini sometimes returns half-finished markdown when the response is interrupted.
+    // Keep the answer readable by removing unmatched markdown markers line-by-line.
+    t = t.split('\n').map(line => {
+      let out = line.trimEnd();
+      const boldMarkers = (out.match(/\*\*/g) || []).length;
+      if (boldMarkers % 2 === 1) out = out.replace(/\*\*/g, '');
+      return out.replace(/\s+$/g, '');
+    }).join('\n');
+    return t;
+  }
+
+  function renderAIReport(text) {
+    const safe = esc(normalizeAIText(text));
+    const lines = safe.split('\n');
+    let html = '';
+    let inList = false;
+    const closeList = () => { if (inList) { html += '</ul>'; inList = false; } };
+
+    for (let raw of lines) {
+      let line = raw.trim();
+      if (!line) { closeList(); continue; }
+
+      const mdHeading = line.match(/^(#{1,4})\s+(.+)$/);
+      if (mdHeading) {
+        closeList();
+        const tag = mdHeading[1].length >= 3 ? 'h4' : 'h3';
+        html += `<${tag}>${fmtInline(mdHeading[2])}</${tag}>`;
+        continue;
+      }
+
+      const boldHeading = line.match(/^\*\*([^*]{2,90})\*\*:?\s*(.*)$/);
+      if (boldHeading) {
+        closeList();
+        html += `<h4>${fmtInline(boldHeading[1])}</h4>`;
+        if (boldHeading[2]) html += `<p>${fmtInline(boldHeading[2])}</p>`;
+        continue;
+      }
+
+      if (/^[•\-–]\s+/.test(line) || /^\*\s+/.test(line)) {
+        if (!inList) { html += '<ul>'; inList = true; }
+        html += `<li>${fmtInline(line.replace(/^[•\-–\*]\s+/, ''))}</li>`;
+        continue;
+      }
+
+      if (/^\d+[\.)]\s+/.test(line)) {
+        if (!inList) { html += '<ul class="num">'; inList = true; }
+        html += `<li>${fmtInline(line.replace(/^\d+[\.)]\s+/, ''))}</li>`;
+        continue;
+      }
+
+      closeList();
+      html += `<p>${fmtInline(line)}</p>`;
+    }
+    closeList();
+    return html || '<p>No answer was generated. Please try again.</p>';
+  }
+
+  function fmtInline(s) {
+    let out = String(s || '');
+    const boldMarkers = (out.match(/\*\*/g) || []).length;
+    if (boldMarkers >= 2 && boldMarkers % 2 === 0) out = out.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+    else out = out.replace(/\*\*/g, '');
+    out = out.replace(/`([^`]+)`/g, '<code>$1</code>');
+    // Remove leftover single markdown stars that would otherwise look broken in the UI.
+    out = out.replace(/(^|\s)\*(?=\S)/g, '$1').replace(/(?<=\S)\*(\s|$)/g, '$1');
+    return out;
+  }
+
+  function renderMarketing() {
+    const leads = state.db.campaigns.reduce((s,c) => s + c.leads, 0);
+    const conv = state.db.campaigns.reduce((s,c) => s + c.conversions, 0);
+    const spend = state.db.campaigns.reduce((s,c) => s + c.spend, 0);
+    const budget = state.db.campaigns.reduce((s,c) => s + c.budget, 0);
+    const cpl = conv > 0 ? Math.round(spend / conv) : 0;
+    const convRate = leads > 0 ? Math.round(conv / leads * 100) : 0;
+    return `
+      ${renderAccessSummary()}
+      <div class="grid cols-4">
+        ${kpi('📣', state.db.campaigns.length, 'Campaigns', 'Active and completed', 'blue')}
+        ${kpi('🧲', leads, 'Leads generated', 'All marketing sources', 'good')}
+        ${kpi('🎯', `${convRate}%`, 'Conv. rate', `${conv} conversions`, convRate >= 20 ? 'good' : 'warn')}
+        ${kpi('💶', money(cpl), 'Cost per client', `${Math.round(spend/budget*100)}% of budget used`, spend > budget ? 'bad' : 'good')}
+      </div>
+      <section class="card" style="margin-top:16px;">
+        <div class="between">
+          <div><div class="card-title">Campaign tracking</div><div class="card-subtitle">Budget vs. spend, lead generation, and conversion performance.</div></div>
+          ${canManageMarketing() ? '<button class="btn" data-action="open-campaign-modal">+ New Campaign</button>' : ''}
+        </div>
+        <div class="table-wrap"><table><thead><tr><th>Campaign</th><th>Owner</th><th>Budget</th><th>Spend</th><th>Leads</th><th>Conv.</th><th>CPL</th><th>Status</th>${canManageMarketing() ? '<th></th>' : ''}</tr></thead><tbody>
+          ${state.db.campaigns.map(c => {
+            const cplRow = c.conversions > 0 ? Math.round(c.spend / c.conversions) : 0;
+            return `<tr>
+              <td><b>${esc(c.name)}</b></td>
+              <td>${esc(userName(c.ownerId))}</td>
+              <td>${money(c.budget)}</td>
+              <td>${money(c.spend)}<div class="score-bar" style="width:80px;margin-top:4px;"><div class="score-fill" style="width:${Math.min(100,Math.round(c.spend/c.budget*100))}%; background:${c.spend > c.budget ? '#dc2626' : '#0d9488'}"></div></div></td>
+              <td>${c.leads}</td>
+              <td>${c.conversions}</td>
+              <td>${cplRow ? money(cplRow) : '—'}</td>
+              <td><span class="pill ${c.status === 'Active' ? 'green' : 'gray'}">${esc(c.status)}</span></td>
+              ${canManageMarketing() ? `<td><button class="btn small secondary" data-action="delete-campaign" data-id="${c.id}" title="Archive campaign">✕</button></td>` : ''}
+            </tr>`;
+          }).join('')}
+        </tbody></table></div>
+      </section>
+      <div class="grid cols-2" style="margin-top:16px; align-items:start;">
+        <section class="card">
+          <div class="card-title">Lead conversion by campaign</div>
+          <div class="card-subtitle">Conversions as share of leads generated.</div>
+          ${barChart(state.db.campaigns.map(c => [c.name, c.conversions, Math.max(...state.db.campaigns.map(x => x.conversions), 1)]))}
+          <div class="divider"></div>
+          <div class="card-title" style="margin-top:8px;">Budget utilisation</div>
+          ${barChart(state.db.campaigns.map(c => [c.name, Math.round(c.spend/c.budget*100), 100]))}
+        </section>
+        <div class="stack">
+          <div class="ai-box">
+            <h3>🤖 AI Marketing Insight</h3>
+            <p>${convRate >= 25 ? 'Strong conversion rate. Scale the highest-converting channels and reduce spend on low-ROI campaigns.' : 'Conversion rate below 25%. Focus on nurturing qualified leads through email sequencing and partner referral programs.'}</p>
+            <div class="divider"></div>
+            <p style="font-size:13px; color:rgba(255,255,255,.7);">Phase 2: direct HubSpot sync to pull real lead data into the BD pipeline automatically.</p>
+          </div>
+          <section class="card">
+            <div class="card-title">Campaign to BD link</div>
+            <div class="card-subtitle">Campaigns that generated BD proposals.</div>
+            <div class="stack">
+              ${visibleProposals().filter(p => p.source === 'Marketing Campaign').map(p => `
+                <div class="client-item">
+                  <div class="between"><b>${esc(p.client)}</b><span class="pill ${p.stage === 'Contract Signed' ? 'green' : 'blue'}">${esc(p.stage)}</span></div>
+                  <div class="task-meta">${money(p.value)} · ${pct(p.probability)} close probability</div>
+                </div>`).join('') || '<div class="empty">No campaign-sourced proposals yet.</div>'}
+            </div>
+          </section>
+        </div>
+      </div>`;
+  }
+
+  function renderGlobal() {
+    return `
+      <div class="grid cols-3" style="align-items:start;">
+        <section class="card" style="grid-column: span 2;">
+          <div class="card-title">Kreston Global resource repository</div>
+          <div class="card-subtitle">Searchable materials, updates, and templates from the global network.</div>
+          <div class="stack">
+            ${state.db.resources.map(r => `
+              <div class="client-item">
+                <div class="between">
+                  <b>${esc(r.title)}</b>
+                  <span class="pill ${r.status === 'New' ? 'blue' : r.status === 'Pinned' ? 'purple' : 'green'}">${esc(r.status)}</span>
+                </div>
+                <div class="task-meta">${esc(r.category)} · ${esc(r.source)} · Added ${fmtDate(r.addedAt)}</div>
+                ${r.description ? `<div class="card-note" style="margin-top:6px;">${esc(r.description)}</div>` : ''}
+                <button class="btn small secondary" style="margin-top:8px;" data-action="link-resource" data-id="${r.id}">Link to engagement</button>
+              </div>`).join('')}
+          </div>
+        </section>
+        <section class="card dark">
+          <div class="card-title">Global network value</div>
+          <p style="line-height:1.7; color:rgba(255,255,255,.8);">Resources from Kreston Global can be attached to clients, proposals, and tasks. This makes knowledge reusable and improves quality across all departments.</p>
+          <div class="divider"></div>
+          <p style="color:rgba(255,255,255,.6); font-size:13px;">Phase 2 will include direct API integration with the global network portal for automated resource sync.</p>
+        </section>
+      </div>`;
+  }
+
+  function renderAudit() {
+    const logs = state.db.logs;
+    const totalActions = logs.length;
+    const uniqueUsers = new Set(logs.map(l => l.userId)).size;
+    const today = logs.filter(l => new Date(l.at).toDateString() === new Date().toDateString()).length;
+    return `
+      ${renderAccessSummary()}
+      <div class="grid cols-4">
+        ${kpi('📋', totalActions, 'Total audit events', 'All logged user actions', 'blue')}
+        ${kpi('👤', uniqueUsers, 'Unique actors', 'Users who triggered events', 'teal')}
+        ${kpi('📅', today, 'Actions today', 'Events in current session', 'good')}
+        ${kpi('🔒', logs.filter(l => l.module === 'Access Control').length, 'Security events', 'Blocked or restricted actions', 'warn')}
+      </div>
+      <section class="card" style="margin-top:16px;">
+        <div class="between">
+          <div><div class="card-title">Full audit trail</div><div class="card-subtitle">All user actions, approvals, and system events — Partner and Admin only.</div></div>
+        </div>
+        <div class="table-wrap"><table><thead><tr><th>Time</th><th>User</th><th>Module</th><th>Action</th><th>Entity</th><th>Result</th></tr></thead><tbody>
+          ${logs.map(l => `<tr>
+            <td style="white-space:nowrap;">${fmtDateTime(l.at)}</td>
+            <td>${esc(userName(l.userId))}</td>
+            <td><span class="pill gray">${esc(l.module)}</span></td>
+            <td>${esc(l.action)}</td>
+            <td>${esc(l.entity || '—')}</td>
+            <td><span class="pill ${l.result === 'Success' ? 'green' : 'red'}">${esc(l.result || 'Success')}</span></td>
+          </tr>`).join('')}
+        </tbody></table></div>
+      </section>`;
+  }
+
+  function renderAdmin() {
+    return `
+      <div class="grid cols-2" style="align-items:start;">
+        <section class="card">
+          <div class="card-title">Create employee account</div>
+          <div class="card-subtitle">Admin-created users with role-based access.</div>
+          <form data-form="create-user" class="form-grid">
+            <label><span class="label">Full name</span><input class="input" name="name" required placeholder="Sara Junior"></label>
+            <label><span class="label">Email</span><input class="input" name="email" required type="email" placeholder="sara@kreston.demo"></label>
+            <label><span class="label">Role</span><select name="role">${ROLES.filter(r => r !== 'Admin').map(r => `<option>${r}</option>`).join('')}</select></label>
+            <label><span class="label">Department</span><select name="department">${DEPARTMENTS.map(d => `<option>${d}</option>`).join('')}</select></label>
+            <label><span class="label">Title</span><input class="input" name="title" placeholder="Junior Auditor"></label>
+            <label><span class="label">Hire date</span><input class="input" name="hireDate" type="date" value="${todayISO()}"></label>
+            <label><span class="label">Salary band</span><select name="salaryBand"><option>Band A</option><option>Band B</option><option selected>Band C</option><option>Band D</option><option>Band E</option><option>Band F</option></select></label>
+            <label><span class="label">Temporary password</span><input class="input" name="password" value="${PASS}"></label>
+            <label style="grid-column:1/-1;"><span class="label">Profile avatar (optional)</span><input class="input" name="avatarFile" type="file" accept="image/*"><span class="field-help">Only file name is stored in demo.</span></label>
+            <button class="btn" style="grid-column:1/-1;" type="submit">Create account</button>
+          </form>
+        </section>
+        <section class="card">
+          <div class="card-title">Access model</div>
+          <div class="card-subtitle">Role hierarchy enforced across all modules.</div>
+          <div class="stack">
+            ${ROLES.slice().reverse().map(r => `<div class="between client-item"><div class="row"><div class="user-avatar-sm">${r[0]}</div><b>${esc(r)}</b></div><span class="pill ${roleColor(r)}">Level ${roleLevel(r)+1}</span></div>`).join('')}
+          </div>
+        </section>
+      </div>
+      <section class="card" style="margin-top:16px;">
+        <div class="card-title">User accounts</div>
+        <div class="table-wrap"><table><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Department</th><th>Hired</th><th>Status</th><th>Actions</th></tr></thead><tbody>
+          ${state.db.users.map(u => `<tr>
+            <td>
+              <div class="user-row">
+                <div class="user-avatar-sm">${esc(initials(u.name))}</div>
+                <b>${esc(u.name)}</b>
+              </div>
+            </td>
+            <td>${esc(u.email)}</td>
+            <td><span class="pill ${roleColor(u.role)}">${esc(u.role)}</span></td>
+            <td>${esc(u.department)}</td>
+            <td>${fmtDate(u.hireDate)}</td>
+            <td><span class="pill ${u.active ? 'green' : 'red'}">${u.active ? 'Active' : 'Disabled'}</span></td>
+            <td>
+              <div class="row">
+                ${canEditUser(u) ? `<button class="btn small secondary" data-action="open-edit-user" data-id="${u.id}">Edit</button>` : ''}
+                ${u.id !== state.user.id ? `<button class="btn small secondary" data-action="toggle-user" data-id="${u.id}">${u.active ? 'Disable' : 'Enable'}</button>` : '<span class="task-meta">Current user</span>'}
+              </div>
+            </td>
+          </tr>`).join('')}
+        </tbody></table></div>
+      </section>`;
+  }
+
+  function renderSettings() {
+    const safeExport = isExecutive() ? state.db : {
+      currentUser: { name: state.user.name, role: state.user.role, department: state.user.department },
+      visibleTasks: visibleTasks(),
+      visibleClients: visibleClients().map(c => ({ ...c, value: canSeeCommercialData() ? c.value : 'restricted' })),
+      visibleDocuments: visibleDocuments(),
+      visibleProposals: visibleProposals().map(p => ({ ...p, value: canSeeCommercialData() ? p.value : 'restricted' })),
+      note: 'Export is role-scoped. Finance, HR, proposal, contract, and salary data are excluded unless authorized.'
+    };
+    const exportJson = JSON.stringify(safeExport, null, 2);
+    return `
+      <div class="grid cols-2" style="align-items:start;">
+        <section class="card">
+          <div class="card-title">Run and demo info</div>
+          <div class="stack">
+            <div class="client-item"><div class="between"><b>Best way to run</b><span class="pill gray">Node</span></div><div class="task-meta">Double-click START_WINDOWS.bat or run: <code>node serve.cjs</code></div></div>
+            <div class="client-item"><div class="between"><b>Architecture</b><span class="pill teal">Vanilla JS SPA</span></div><div class="task-meta">Pure HTML, CSS, JavaScript — no Vite, React, or npm install required.</div></div>
+            <div class="client-item"><div class="between"><b>Data storage</b><span class="pill blue">localStorage</span></div><div class="task-meta">All demo data saved locally. Press "Reset" to restore to seed data anytime.</div></div>
+            <div class="client-item"><div class="between"><b>Gemini Copilot</b><span class="pill ${state.aiMode === 'live' ? 'green' : 'orange'}">${state.aiMode === 'live' ? 'Live' : 'Fallback'}</span></div><div class="task-meta">Add GEMINI_API_KEY= to .env file for live AI responses.</div></div>
+            <div class="client-item"><div class="between"><b>Store version</b><span class="pill gray">v4 MVP</span></div><div class="task-meta">${state.db.users.length} users · ${state.db.clients.length} clients · ${state.db.tasks.length} tasks · ${state.db.proposals.length} proposals</div></div>
+          </div>
+          <div class="divider"></div>
+          <div class="row">
+            <button class="btn warning" data-action="reset-data">↺ Reset demo data</button>
+            <button class="btn secondary" data-action="print-page">🖨 Print page</button>
+            <button class="btn secondary" data-action="copy-export">📋 Copy export</button>
+          </div>
+        </section>
+        <section class="card">
+          <div class="card-title">Demo accounts</div>
+          <div class="card-subtitle">Password for all accounts: <b>${PASS}</b> · Click any to switch view.</div>
+          <div class="table-wrap"><table><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Dept</th></tr></thead><tbody>
+            ${(isExecutive() ? state.db.users : [state.user]).map(u => `<tr>
+              <td><div class="user-row"><div class="user-avatar-sm">${esc(initials(u.name))}</div><b>${esc(u.name)}</b></div></td>
+              <td style="font-size:12px;">${esc(u.email)}</td>
+              <td><span class="pill ${roleColor(u.role)}">${esc(u.role)}</span></td>
+              <td>${esc(u.department)}</td>
+            </tr>`).join('')}
+          </tbody></table></div>
+        </section>
+      </div>
+      <section class="card" style="margin-top:16px;">
+        <div class="between">
+          <div><div class="card-title">Export demo data (role-scoped)</div><div class="card-subtitle">${isExecutive() ? 'Full database export for Admin/Partner.' : 'Scoped to your permission level.'}</div></div>
+          <button class="btn small secondary" data-action="copy-export">Copy JSON</button>
+        </div>
+        <textarea id="exportArea" class="input" style="min-height:220px; font-family:ui-monospace,monospace; font-size:12px; margin-top:12px;" readonly>${esc(exportJson)}</textarea>
+      </section>`; 
+  }
+
+  function renderModal() {
+    if (!state.modal) return '';
+    if (state.modal.type === 'task') return renderTaskModal();
+    if (state.modal.type === 'edit-task') return renderTaskEditModal(state.modal.taskId);
+    if (state.modal.type === 'client') return renderClientModal();
+    if (state.modal.type === 'edit-client') return renderClientEditModal(state.modal.clientId);
+    if (state.modal.type === 'doc') return renderDocModal();
+    if (state.modal.type === 'edit-user') return renderUserEditModal(state.modal.userId);
+    if (state.modal.type === 'approve') return renderApproveModal(state.modal.taskId);
+    if (state.modal.type === 'bd') return renderBDModal();
+    if (state.modal.type === 'edit-bd') return renderBDEditModal(state.modal.proposalId);
+    if (state.modal.type === 'expense') return renderExpenseModal();
+    if (state.modal.type === 'leave') return renderLeaveModal();
+    if (state.modal.type === 'campaign') return renderCampaignModal();
+    return '';
+  }
+
+  function modalWrap(title, subtitle, body) {
+    return `<div class="modal-backdrop" data-modal-backdrop="true"><div class="modal" data-stop="true">
+      <div class="between">
+        <div><div class="card-title">${title}</div><div class="card-subtitle">${subtitle}</div></div>
+        <button class="btn small secondary" data-action="close-modal">Close</button>
+      </div>
+      ${body}
+    </div></div>`;
+  }
+
+  function renderTaskModal() {
+    const clients = visibleClients();
+    const users = state.db.users.filter(u => u.active && (canSeeUser(state.user, u) || u.id === state.user.id || isExecutive()));
+    const selectedClient = state.modal.clientId || clients[0]?.id || '';
+    return modalWrap('Create new task', 'Assign work, deadline, reviewer, and workflow status.',
+      `<form data-form="create-task" class="form-grid cols-3" style="margin-top:14px;">
+        <label style="grid-column:1/-1;"><span class="label">Task title *</span><input class="input" name="title" required placeholder="Example: Review audit documentation"></label>
+        <label><span class="label">Client</span><select name="clientId"><option value="">Internal</option>${clients.map(c => `<option value="${c.id}" ${selectedClient === c.id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select></label>
+        <label><span class="label">Department</span><select name="department">${DEPARTMENTS.map(d => `<option>${d}</option>`).join('')}</select></label>
+        <label><span class="label">Priority</span><select name="priority"><option>Low</option><option selected>Medium</option><option>High</option></select></label>
+        <label><span class="label">Assignee *</span><select name="assigneeId">${users.map(u => `<option value="${u.id}">${esc(u.name)} — ${esc(u.role)}</option>`).join('')}</select></label>
+        <label><span class="label">Reviewer *</span><select name="reviewerId">${users.map(u => `<option value="${u.id}" ${u.id === state.user.id ? 'selected' : ''}>${esc(u.name)} — ${esc(u.role)}</option>`).join('')}</select></label>
+        <label><span class="label">Due date</span><input class="input" name="dueDate" type="date" value="${todayISO(7)}"></label>
+        <label style="grid-column:1/-1;"><span class="label">Description</span><textarea name="description" class="input" rows="3" placeholder="Describe the work and expected deliverable"></textarea></label>
+        <button class="btn" style="grid-column:1/-1;" type="submit">Create task</button>
+      </form>`);
+  }
+
+  function renderClientModal() {
+    return modalWrap('Create new client', 'Add a Client 360 record to the platform.',
+      `<form data-form="create-client" class="form-grid" style="margin-top:14px;">
+        <label><span class="label">Client name *</span><input class="input" name="name" required></label>
+        <label><span class="label">Industry *</span><input class="input" name="industry" required></label>
+        <label><span class="label">Contact person *</span><input class="input" name="contact" required></label>
+        <label><span class="label">Email</span><input class="input" name="email" type="email"></label>
+        <label><span class="label">Phone</span><input class="input" name="phone" placeholder="+355 68..."></label>
+        <label><span class="label">Lead source</span><select name="leadSource"><option>Referral</option><option>LinkedIn</option><option>Marketing Campaign</option><option>Kreston Global</option><option>Cold Outreach</option></select></label>
+        <label><span class="label">Status</span><select name="status"><option>Proposal Sent</option><option>Onboarding</option><option>Active Client</option><option>Renewal Discussion</option></select></label>
+        <label><span class="label">Contract value (EUR)</span><input class="input" name="value" type="number" value="15000"></label>
+        <label><span class="label">Contract end</span><input class="input" name="contractEnd" type="date" value="${todayISO(90)}"></label>
+        <label><span class="label">Risk level</span><select name="risk"><option>Low</option><option selected>Medium</option><option>High</option></select></label>
+        <label style="grid-column:1/-1;"><span class="label">Notes</span><textarea name="notes" class="input" rows="2" placeholder="Key notes about this client..."></textarea></label>
+        <button class="btn" style="grid-column:1/-1;" type="submit">Create client</button>
+      </form>`);
+  }
+
+  function renderDocModal() {
+    const clients = visibleClients();
+    return modalWrap('Add document', 'Store file metadata, version, and approval status.',
+      `<form data-form="create-doc" class="form-grid" style="margin-top:14px;">
+        <label><span class="label">Document name *</span><input class="input" name="name" required placeholder="Client - Report.pdf"></label>
+        <label><span class="label">Client</span><select name="clientId"><option value="">Internal</option>${clients.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select></label>
+        <label><span class="label">Type</span><select name="type">${DOC_TYPES.filter(canCreateSensitiveDocType).map(t => `<option>${t}</option>`).join('')}</select></label>
+        <label><span class="label">Version</span><input class="input" name="version" value="v1.0"></label>
+        <label><span class="label">Status</span><select name="status"><option>Draft</option><option>Submitted</option><option>Under Review</option><option>Approved</option></select></label>
+        <label><span class="label">Simulated size</span><input class="input" name="size" value="1.0 MB"></label>
+        <label style="grid-column:1/-1;"><span class="label">Attach file (optional)</span><input class="input" name="attachment" type="file" accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.csv"><span class="field-help">Demo stores metadata only — no file content is uploaded.</span></label>
+        <button class="btn" style="grid-column:1/-1;" type="submit">Add document</button>
+      </form>`);
+  }
+
+  function renderTaskEditModal(taskId) {
+    const t = byId(state.db.tasks, taskId);
+    if (!t || !canEditTask(t)) return modalWrap('Restricted', 'You cannot edit this task.', '<button class="btn secondary" data-action="close-modal">Close</button>');
+    const clients = visibleClients();
+    const users = state.db.users.filter(u => u.active && (canSeeUser(state.user, u) || u.id === state.user.id || isExecutive()));
+    return modalWrap('Edit task', 'Update task information without closing unexpectedly.',
+      `<form data-form="edit-task" data-id="${t.id}" class="form-grid cols-3" style="margin-top:14px;">
+        <label style="grid-column:1/-1;"><span class="label">Task title *</span><input class="input" name="title" required value="${esc(t.title)}"></label>
+        <label><span class="label">Client</span><select name="clientId"><option value="">Internal</option>${clients.map(c => `<option value="${c.id}" ${t.clientId === c.id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select></label>
+        <label><span class="label">Department</span><select name="department">${DEPARTMENTS.map(d => `<option ${t.department === d ? 'selected' : ''}>${d}</option>`).join('')}</select></label>
+        <label><span class="label">Priority</span><select name="priority">${['Low','Medium','High'].map(p => `<option ${t.priority === p ? 'selected' : ''}>${p}</option>`).join('')}</select></label>
+        <label><span class="label">Assignee</span><select name="assigneeId">${users.map(u => `<option value="${u.id}" ${t.assigneeId === u.id ? 'selected' : ''}>${esc(u.name)} — ${esc(u.role)}</option>`).join('')}</select></label>
+        <label><span class="label">Reviewer</span><select name="reviewerId">${users.map(u => `<option value="${u.id}" ${t.reviewerId === u.id ? 'selected' : ''}>${esc(u.name)} — ${esc(u.role)}</option>`).join('')}</select></label>
+        <label><span class="label">Due date</span><input class="input" name="dueDate" type="date" value="${esc(t.dueDate)}"></label>
+        <label><span class="label">Status</span><select name="status">${allowedTaskStatusesForCurrentUser(t).map(st => `<option ${t.status === st ? 'selected' : ''}>${st}</option>`).join('')}</select></label>
+        <label style="grid-column:1/-1;"><span class="label">Description</span><textarea name="description" class="input" rows="3">${esc(t.description || '')}</textarea></label>
+        <button class="btn" style="grid-column:1/-1;" type="submit">Save task changes</button>
+      </form>`);
+  }
+
+  function renderClientEditModal(clientId) {
+    const c = byId(state.db.clients, clientId);
+    if (!c || !canEditClient(c)) return modalWrap('Restricted', 'You cannot edit this client.', '<button class="btn secondary" data-action="close-modal">Close</button>');
+    return modalWrap('Edit client', 'Sensitive commercial values protected by role.',
+      `<form data-form="edit-client" data-id="${c.id}" class="form-grid" style="margin-top:14px;">
+        <label><span class="label">Client name *</span><input class="input" name="name" required value="${esc(c.name)}"></label>
+        <label><span class="label">Industry *</span><input class="input" name="industry" required value="${esc(c.industry)}"></label>
+        <label><span class="label">Contact person *</span><input class="input" name="contact" required value="${esc(c.contact)}"></label>
+        <label><span class="label">Email</span><input class="input" name="email" type="email" value="${esc(c.email)}"></label>
+        <label><span class="label">Status</span><select name="status">${['Proposal Sent','Onboarding','Active Client','Renewal Discussion'].map(st => `<option ${c.status === st ? 'selected' : ''}>${st}</option>`).join('')}</select></label>
+        ${canSeeCommercialData() ? `<label><span class="label">Value (EUR)</span><input class="input" name="value" type="number" value="${Number(c.value || 0)}"></label>` : `<input type="hidden" name="value" value="${Number(c.value || 0)}">`}
+        <label><span class="label">Contract end</span><input class="input" name="contractEnd" type="date" value="${esc(c.contractEnd)}"></label>
+        <label><span class="label">Risk level</span><select name="risk">${['Low','Medium','High'].map(r => `<option ${c.risk === r ? 'selected' : ''}>${r}</option>`).join('')}</select></label>
+        <label style="grid-column:1/-1;"><span class="label">Notes</span><textarea name="notes" class="input" rows="2">${esc(c.notes || '')}</textarea></label>
+        <button class="btn" style="grid-column:1/-1;" type="submit">Save client changes</button>
+      </form>`);
+  }
+
+  function renderUserEditModal(userId) {
+    const u = byId(state.db.users, userId);
+    if (!u || !canEditUser(u)) return modalWrap('Restricted', 'You cannot edit this user.', '<button class="btn secondary" data-action="close-modal">Close</button>');
+    return modalWrap('Edit employee', 'Change role, department, title, and profile safely.',
+      `<form data-form="edit-user" data-id="${u.id}" class="form-grid" style="margin-top:14px;">
+        <label><span class="label">Full name *</span><input class="input" name="name" required value="${esc(u.name)}"></label>
+        <label><span class="label">Email *</span><input class="input" name="email" required type="email" value="${esc(u.email)}"></label>
+        <label><span class="label">Role</span><select name="role">${ROLES.filter(r => r !== 'Admin' || state.user.role === 'Admin').map(r => `<option ${u.role === r ? 'selected' : ''}>${r}</option>`).join('')}</select></label>
+        <label><span class="label">Department</span><select name="department">${DEPARTMENTS.map(d => `<option ${u.department === d ? 'selected' : ''}>${d}</option>`).join('')}</select></label>
+        <label><span class="label">Title</span><input class="input" name="title" value="${esc(u.title)}"></label>
+        <label><span class="label">Password</span><input class="input" name="password" value="${esc(u.password || PASS)}"></label>
+        <button class="btn" style="grid-column:1/-1;" type="submit">Save employee changes</button>
+      </form>`);
+  }
+
+  function renderApproveModal(taskId) {
+    const t = byId(state.db.tasks, taskId);
+    if (!t) return '';
+    return `<div class="modal-backdrop" data-modal-backdrop="true"><div class="modal" data-stop="true">
+      <div class="between">
+        <div><div class="card-title">Digital approval</div><div class="card-subtitle">Sign and verify fingerprint to approve.</div></div>
+        <button class="btn small secondary" data-action="close-modal">Close</button>
+      </div>
+      <div class="grid cols-2" style="margin-top:14px; align-items:start;">
+        <section>
+          <div class="card-title">${esc(t.title)}</div>
+          <div class="task-meta">${esc(clientName(t.clientId))} · Owner: ${esc(userName(t.assigneeId))}</div>
+          <div class="divider"></div>
+          <span class="label">Pen signature</span>
+          <canvas id="signaturePad" class="signature-pad"></canvas>
+          <div class="row" style="margin-top:8px;"><button class="btn small secondary" data-action="clear-signature">Clear</button></div>
+        </section>
+        <section class="card flat">
+          <div class="fingerprint">⌾</div>
+          <p class="task-meta" style="text-align:center;">Click below to simulate fingerprint verification before approval.</p>
+          <button class="btn secondary" style="width:100%;" data-action="verify-fingerprint">${state.fingerprintOk ? 'Fingerprint verified ✓' : 'Verify fingerprint'}</button>
+          <div class="divider"></div>
+          <button class="btn success" style="width:100%;" data-action="approve-task" data-id="${t.id}" ${state.fingerprintOk ? '' : 'disabled'}>Approve and sign task</button>
+        </section>
+      </div>
+    </div></div>`;
+  }
+
+  function renderBDModal() {
+    return modalWrap('New BD proposal', 'Add a prospect or opportunity to the pipeline.',
+      `<form data-form="create-bd" class="form-grid" style="margin-top:14px;">
+        <label><span class="label">Client / prospect name *</span><input class="input" name="client" required placeholder="Company name"></label>
+        <label><span class="label">Lead source</span><select name="source"><option>Referral</option><option>Marketing Campaign</option><option>LinkedIn</option><option>Kreston Global</option><option>Cold Outreach</option><option>Existing Client</option></select></label>
+        <label><span class="label">Stage</span><select name="stage">${BD_STAGES.map(s => `<option>${s}</option>`).join('')}</select></label>
+        <label><span class="label">Probability (%)</span><input class="input" name="probability" type="number" min="0" max="100" value="30"></label>
+        <label><span class="label">Value (EUR)</span><input class="input" name="value" type="number" value="20000"></label>
+        <label><span class="label">Owner</span><select name="ownerId">${state.db.users.filter(u => isSeniorLevel() || u.id === state.user.id).map(u => `<option value="${u.id}" ${u.id === state.user.id ? 'selected' : ''}>${esc(u.name)} — ${esc(u.role)}</option>`).join('')}</select></label>
+        <label style="grid-column:1/-1;"><span class="label">Services</span><input class="input" name="services" placeholder="Audit & Advisory, Tax..."></label>
+        <label style="grid-column:1/-1;"><span class="label">Notes</span><textarea name="notes" class="input" rows="2" placeholder="Key notes, next steps..."></textarea></label>
+        <button class="btn" style="grid-column:1/-1;" type="submit">Add to pipeline</button>
+      </form>`);
+  }
+
+  function renderBDEditModal(proposalId) {
+    const p = byId(state.db.proposals, proposalId);
+    if (!p) return '';
+    return modalWrap('Edit proposal', 'Update BD opportunity details.',
+      `<form data-form="edit-bd" data-id="${p.id}" class="form-grid" style="margin-top:14px;">
+        <label><span class="label">Client / prospect *</span><input class="input" name="client" required value="${esc(p.client)}"></label>
+        <label><span class="label">Lead source</span><select name="source">${['Referral','Marketing Campaign','LinkedIn','Kreston Global','Cold Outreach','Existing Client'].map(s => `<option ${p.source === s ? 'selected' : ''}>${s}</option>`).join('')}</select></label>
+        <label><span class="label">Stage</span><select name="stage">${BD_STAGES.map(s => `<option ${p.stage === s ? 'selected' : ''}>${s}</option>`).join('')}</select></label>
+        <label><span class="label">Probability (%)</span><input class="input" name="probability" type="number" min="0" max="100" value="${p.probability}"></label>
+        <label><span class="label">Value (EUR)</span><input class="input" name="value" type="number" value="${p.value}"></label>
+        <label><span class="label">Owner</span><select name="ownerId">${state.db.users.map(u => `<option value="${u.id}" ${p.ownerId === u.id ? 'selected' : ''}>${esc(u.name)} — ${esc(u.role)}</option>`).join('')}</select></label>
+        <label style="grid-column:1/-1;"><span class="label">Notes</span><textarea name="notes" class="input" rows="2">${esc(p.notes || '')}</textarea></label>
+        <button class="btn" style="grid-column:1/-1;" type="submit">Save proposal</button>
+      </form>`);
+  }
+
+  function renderExpenseModal() {
+    return modalWrap('Submit expense', 'Record a firm expense for approval.',
+      `<form data-form="create-expense" class="form-grid" style="margin-top:14px;">
+        <label><span class="label">Description *</span><input class="input" name="description" required placeholder="Client visit - taxi and hotel"></label>
+        <label><span class="label">Category</span><select name="category">${EXPENSE_CATS.map(c => `<option>${c}</option>`).join('')}</select></label>
+        <label><span class="label">Amount (EUR) *</span><input class="input" name="amount" type="number" required min="1" value="200"></label>
+        <label><span class="label">Department</span><select name="department">${DEPARTMENTS.map(d => `<option ${d === state.user.department ? 'selected' : ''}>${d}</option>`).join('')}</select></label>
+        <label><span class="label">Date</span><input class="input" name="date" type="date" value="${todayISO()}"></label>
+        <label><span class="label">Approver</span><select name="approverId">${state.db.users.filter(u => isManagerLevel() ? roleLevel(u.role) >= roleLevel('Manager') : u.id === state.user.id).map(u => `<option value="${u.id}">${esc(u.name)} — ${esc(u.role)}</option>`).join('')}</select></label>
+        <label style="grid-column:1/-1;"><span class="label">Notes</span><textarea name="notes" class="input" rows="2" placeholder="Additional context..."></textarea></label>
+        <button class="btn" style="grid-column:1/-1;" type="submit">Submit expense</button>
+      </form>`);
+  }
+
+  function renderLeaveModal() {
+    return modalWrap('Request leave', 'Submit a leave request for approval.',
+      `<form data-form="create-leave" class="form-grid" style="margin-top:14px;">
+        <label><span class="label">Employee</span><select name="userId">${visibleUsers().map(u => `<option value="${u.id}" ${u.id === state.user.id ? 'selected' : ''}>${esc(u.name)} — ${esc(u.role)}</option>`).join('')}</select></label>
+        <label><span class="label">Leave type</span><select name="type">${LEAVE_TYPES.map(t => `<option>${t}</option>`).join('')}</select></label>
+        <label><span class="label">From date *</span><input class="input" name="from" type="date" required value="${todayISO(7)}"></label>
+        <label><span class="label">To date *</span><input class="input" name="to" type="date" required value="${todayISO(7)}"></label>
+        <label><span class="label">Approver</span><select name="approverId">${state.db.users.filter(u => roleLevel(u.role) >= roleLevel('Senior')).map(u => `<option value="${u.id}">${esc(u.name)} — ${esc(u.role)}</option>`).join('')}</select></label>
+        <label style="grid-column:1/-1;"><span class="label">Notes</span><textarea name="notes" class="input" rows="2" placeholder="Any relevant context..."></textarea></label>
+        <button class="btn" style="grid-column:1/-1;" type="submit">Submit leave request</button>
+      </form>`);
+  }
+
+  function renderCampaignModal() {
+    const users = state.db.users.filter(u => u.active && (isExecutive() || u.department === 'Marketing' || u.id === state.user.id));
+    return modalWrap('New marketing campaign', 'Track campaign budget, leads, and conversions.',
+      `<form data-form="create-campaign" class="form-grid" style="margin-top:14px;">
+        <label style="grid-column:1/-1;"><span class="label">Campaign name *</span><input class="input" name="name" required placeholder="Q3 Tax Webinar Campaign"></label>
+        <label><span class="label">Owner</span><select name="ownerId">${users.map(u => `<option value="${u.id}" ${u.id === state.user.id ? 'selected' : ''}>${esc(u.name)}</option>`).join('')}</select></label>
+        <label><span class="label">Budget (EUR)</span><input class="input" name="budget" type="number" value="2000" min="0"></label>
+        <label><span class="label">Initial spend (EUR)</span><input class="input" name="spend" type="number" value="0" min="0"></label>
+        <label><span class="label">Leads generated</span><input class="input" name="leads" type="number" value="0" min="0"></label>
+        <label><span class="label">Conversions</span><input class="input" name="conversions" type="number" value="0" min="0"></label>
+        <label><span class="label">Status</span><select name="status"><option>Active</option><option>Paused</option><option>Completed</option></select></label>
+        <button class="btn" style="grid-column:1/-1;" type="submit">Create campaign</button>
+      </form>`);
+  }
+
+  function generateExecutiveSummary() {
+    const tasks = visibleTasks();
+    const clients = visibleClients();
+    const overdue = tasks.filter(isOverdue);
+    const highRisk = clients.map(c => ({ c, risk: clientRisk(c) })).filter(x => x.risk >= 65).sort((a,b) => b.risk-a.risk);
+    const overloaded = visibleUsers().map(u => ({ u, s: scoreEmployee(u.id) })).filter(x => x.s.workload >= 3 || x.s.overdue > 0).sort((a,b) => b.s.workload-a.s.workload);
+    return `## Executive Summary\n\n**Visible clients:** ${clients.length}\n**Open tasks:** ${tasks.filter(t => !['Approved','Delivered'].includes(t.status)).length}\n**Overdue tasks:** ${overdue.length}\n**High-risk clients:** ${highRisk.map(x => x.c.name).join(', ') || 'None'}\n**Workload attention:** ${overloaded.slice(0,3).map(x => `${x.u.name} (${x.s.workload} open)`).join(', ') || 'Balanced'}\n\n## Recommended actions\n\n1. Review overdue and high-priority tasks first.\n2. Schedule renewal follow-ups for contracts ending soon.\n3. Use manager approval and digital signature for submitted work.\n4. Convert stale BD proposals into follow-up tasks.`;
+  }
+
+  function generateEmployeeReport(userId) {
+    const u = byId(state.db.users, userId);
+    const s = scoreEmployee(userId);
+    const tasks = state.db.tasks.filter(t => t.assigneeId === userId);
+    const overdue = tasks.filter(isOverdue);
+    const completed = tasks.filter(t => ['Approved','Delivered'].includes(t.status));
+    return `AI Supervisor Report\n\nEmployee: ${u.name}\nRole: ${u.role} · Department: ${u.department}\n\nPerformance Score: ${s.score}/100\nCompleted Tasks: ${completed.length}/${tasks.length}\nOpen Workload: ${s.workload}\nOverdue Tasks: ${overdue.length}\nAverage Quality: ${s.avgQuality}/100\n\nTask detail:\n${tasks.length ? tasks.map(t => `• ${t.title} — ${t.status}, due ${fmtDate(t.dueDate)}, quality ${t.quality}/100`).join('\n') : '• No assigned tasks yet.'}\n\nRecommendation:\n${employeeRecommendation(userId)}\n\nManager action:\n${s.overdue ? 'Schedule a check-in and remove blockers from overdue work.' : 'Continue normal review rhythm and assign the next suitable task.'}`;
+  }
+
+  function generateAIAnswer(command, question = '') {
+    const block = blockedSensitiveRequest(question, command);
+    if (block) return `Access restricted\n\nYour role cannot access ${block.label}.\n\nAllowed alternative: ask about your own assigned tasks, visible workflow status, quality checklist, or implementation plan.`;
+    const tasks = visibleTasks();
+    const clients = visibleClients();
+    if (command === 'taskhelp' || /my task|what should i work|next task|assigned work/i.test(question)) {
+      const mine = tasks.filter(t => t.assigneeId === state.user.id || t.reviewerId === state.user.id).slice(0, 8);
+      return `My Task Assistant\n\n${mine.map(t => `• ${t.title}: ${t.status}, due ${fmtDate(t.dueDate)}, priority ${t.priority}, quality ${t.quality}/100`).join('\n') || '• No visible assigned tasks.'}\n\nNext action: finish In Progress work first, submit completed drafts for review, and ask your reviewer for feedback on any low-quality task.`;
+    }
+    if (command === 'risk' || /risk|client/i.test(question)) {
+      const rows = clients.map(c => ({ c, risk: clientRisk(c) })).sort((a,b) => b.risk-a.risk).slice(0,5);
+      return `Client Risk Analysis\n\n${rows.map(x => `• ${x.c.name}: ${x.risk}/100 — ${clientNextAction(x.c, x.risk, Math.ceil((new Date(x.c.contractEnd)-new Date(todayISO()))/86400000))}`).join('\n')}\n\nBest action: show these risks on the Partner dashboard and auto-create follow-up tasks.`;
+    }
+    if (command === 'workload' || /workload|overload|employee/i.test(question)) {
+      const rows = visibleUsers().map(u => ({ u, s: scoreEmployee(u.id) })).sort((a,b) => b.s.workload-a.s.workload).slice(0,6);
+      return `Workload Analysis\n\n${rows.map(x => `• ${x.u.name}: ${x.s.workload} open, ${x.s.overdue} overdue, score ${x.s.score}/100`).join('\n')}\n\nRecommendation: redistribute tasks from employees with overdue work to those with lower active workload.`;
+    }
+    if (command === 'bd' || /proposal|sales|pipeline|bd/i.test(question)) {
+      if (!hasRouteAccess('bd')) return 'BD Pipeline is restricted for your role. Ask about your own tasks, quality queue, or implementation plan instead.';
+      const proposals = visibleProposals();
+      const stale = proposals.filter(p => p.ageDays > 14);
+      const top = proposals.slice().sort((a,b) => b.value-a.value)[0];
+      return `Business Development Summary
+
+Open proposals: ${proposals.length}
+Stale proposals (>14d): ${stale.length}
+Weighted pipeline: ${money(proposals.reduce((s,p)=>s+p.value*p.probability/100,0))}
+
+Top opportunity: ${top ? `${top.client} at ${money(top.value)}` : 'No visible proposals'}
+
+Next action: ${stale.length ? `follow up ${stale.map(p=>p.client).join(', ')} with partner-level call.` : 'focus on moving qualified leads into proposal stage.'}`;
+    }
+    if (command === 'finance' || /finance|budget|cost/i.test(question)) {
+      if (!hasRouteAccess('finance')) return 'Internal Finance is restricted for your role. This protects budget and profitability data.';
+      const risks = state.db.budgets.filter(b => b.actual / b.budget > .7);
+      return `Finance Control Summary\n\n${state.db.budgets.map(b => `• ${b.department}: ${Math.round(b.actual/b.budget*100)}% budget used, revenue ${money(b.revenue)}`).join('\n')}\n\nCost risks: ${risks.map(b => b.department).join(', ') || 'none'}\nRecommendation: alert partners when utilisation exceeds 85%.`;
+    }
+    if (command === 'quality' || /quality|review/i.test(question)) {
+      const low = tasks.filter(t => t.quality < 78 || isOverdue(t)).sort((a,b)=>a.quality-b.quality).slice(0,6);
+      return `Quality Review\n\n${low.map(t => `• ${t.title}: ${t.quality}/100, ${t.status}, owner ${userName(t.assigneeId)}`).join('\n') || 'No low-quality items found.'}\n\nRecommendation: require Senior review before Manager approval for low-quality or overdue deliverables.`;
+    }
+    return generateExecutiveSummary();
+  }
+
+  function copilotContext() {
+    const tasks = visibleTasks();
+    const clients = visibleClients();
+    const users = visibleUsers();
+    const highRisk = clients.map(c => ({
+      name: c.name, industry: c.industry, status: c.status,
+      value: canSeeCommercialData() ? c.value : 'restricted',
+      contractEnd: isSeniorLevel() ? c.contractEnd : 'restricted',
+      riskScore: clientRisk(c),
+      nextAction: clientNextAction(c, clientRisk(c), Math.ceil((new Date(c.contractEnd) - new Date(todayISO())) / 86400000))
+    })).sort((a,b) => b.riskScore - a.riskScore).slice(0, 6);
+    const workload = users.map(u => ({
+      name: u.name, role: u.role, department: u.department,
+      score: scoreEmployee(u.id).score, openTasks: scoreEmployee(u.id).workload,
+      overdue: scoreEmployee(u.id).overdue, avgQuality: scoreEmployee(u.id).avgQuality
+    })).sort((a,b) => b.openTasks - a.openTasks).slice(0, 8);
+    return {
+      currentUser: { name: state.user.name, role: state.user.role, department: state.user.department },
+      visibleScope: `${clients.length} clients, ${tasks.length} tasks, ${users.length} employees`,
+      kpis: {
+        openTasks: tasks.filter(t => !['Approved','Delivered'].includes(t.status)).length,
+        overdueTasks: tasks.filter(isOverdue).length,
+        submittedOrReview: tasks.filter(t => ['Submitted','Under Review'].includes(t.status)).length,
+        weightedPipeline: hasRouteAccess('bd') ? Math.round(visibleProposals().reduce((sum,p) => sum + p.value * p.probability / 100, 0)) : 'restricted',
+        budgetUsedPercent: hasRouteAccess('finance') ? Math.round(state.db.budgets.reduce((s,b)=>s+b.actual,0) / Math.max(1,state.db.budgets.reduce((s,b)=>s+b.budget,0)) * 100) : 'restricted'
+      },
+      highRiskClients: highRisk,
+      workload,
+      tasks: tasks.slice(0, 12).map(t => ({ title: t.title, client: clientName(t.clientId), department: t.department, assignee: userName(t.assigneeId), reviewer: userName(t.reviewerId), status: t.status, priority: t.priority, dueDate: t.dueDate, overdue: isOverdue(t), quality: t.quality })),
+      proposals: hasRouteAccess('bd') ? visibleProposals().map(p => ({ client: p.client, stage: p.stage, probability: p.probability, value: p.value, ageDays: p.ageDays })) : [],
+      finance: hasRouteAccess('finance') ? state.db.budgets : []
+    };
+  }
+
+  function commandPrompt(command, question = '') {
+    const templates = {
+      summary: 'Generate a concise partner-ready executive summary with KPIs, top client risks, workload signals, and recommended next actions.',
+      taskhelp: 'Analyze only my visible tasks. Tell me what to do next, what is overdue, and what quality checks to follow.',
+      risk: 'Analyze client risk. Prioritize the top clients that need partner or manager attention and give concrete next actions.',
+      workload: 'Analyze employee workload. Tell the manager who is overloaded, who needs help, and how to redistribute work.',
+      bd: 'Analyze the BD pipeline. Identify stale proposals, highest-value opportunities, and follow-up strategy.',
+      finance: 'Analyze internal finance and budget utilization. Flag cost risks, profitability signals, and management actions.',
+      quality: 'Analyze work quality and review controls. Identify deliverables that need senior/manager review before approval.',
+      implementation: 'Act as a senior product architect. Give the best next implementation plan to make this KrestonFlow AI demo more professional.'
+    };
+    return question.trim() || templates[command] || 'Generate a concise executive management report.';
+  }
+
+  async function runCopilot(command = '', question = '') {
+    const prompt = commandPrompt(command, question);
+    const userText = question.trim() || (command ? aiCommands().find(c => c[0] === command)?.[2] || prompt : prompt);
+    // Push user message to chat
+    state.aiChat.push({ role: 'user', text: userText });
+
+    const block = blockedSensitiveRequest(prompt, command);
+    if (!canUseAICommand(command)) {
+      state.aiMode = 'policy';
+      state.aiChat.push({ role: 'assistant', text: generateAIAnswer(command, prompt), blocked: true, mode: 'fallback' });
+      render(); scrollChat(); return;
+    }
+    if (block) {
+      state.aiMode = 'policy';
+      state.aiChat.push({ role: 'assistant', blocked: true, mode: 'fallback',
+        text: `**Access restricted.** Your current role (${state.user.role}) cannot access ${block.label}.\n\nAllowed alternative: ask about your own tasks, visible workflow, or quality review.` });
+      render(); scrollChat();
+      addLog(`Blocked Copilot request: ${block.key}`, 'Access Control', block.key, 'Blocked'); return;
+    }
+    state.aiLoading = true; state.aiNotice = ''; render(); scrollChat();
+    try {
+      const res = await fetch('/api/copilot', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt, command, context: copilotContext(), policy: { currentRole: state.user.role, allowedCommands: aiCommands().map(x => x[0]) } })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.answer) throw new Error(data.error || 'Unavailable');
+      state.aiMode = data.mode === 'live' ? 'live' : 'fallback';
+      state.aiChat.push({ role: 'assistant', text: normalizeAIText(data.answer), mode: state.aiMode });
+      addLog(`Copilot query: ${prompt.slice(0, 80)}`, 'Gemini Copilot', command, 'Success');
+    } catch (err) {
+      console.warn('Copilot fallback:', err);
+      state.aiMode = 'fallback';
+      state.aiChat.push({ role: 'assistant', text: normalizeAIText(generateAIAnswer(command, prompt)), mode: 'fallback' });
+    } finally {
+      state.aiLoading = false; render(); scrollChat();
+    }
+  }
+
+  function scrollChat() {
+    setTimeout(() => {
+      ['copilotChat', 'kaiMessages'].forEach(id => {
+        const c = document.getElementById(id);
+        if (c) c.scrollTop = c.scrollHeight;
+      });
+    }, 30);
+  }
+
+  function handleSubmit(e) {
+    const form = e.target.closest('form[data-form]');
+    if (!form) return;
+    e.preventDefault();
+    const data = Object.fromEntries(new FormData(form).entries());
+    const type = form.dataset.form;
+    if (type === 'login') return doLogin(data.email, data.password);
+    if (type === 'create-user') return canCreateUsers() ? createUser(data) : toast('Only Admin or Partner can create users.');
+    if (type === 'edit-user') return updateUser(form.dataset.id, data);
+    if (type === 'create-task') return canCreateTask() ? createTask(data) : toast('Your role cannot create new tasks.');
+    if (type === 'edit-task') return updateTask(form.dataset.id, data);
+    if (type === 'create-client') return canCreateClient() ? createClient(data) : toast('Client creation requires Manager level or above.');
+    if (type === 'edit-client') return updateClient(form.dataset.id, data);
+    if (type === 'create-doc') return canCreateDocument() ? createDoc(data) : toast('Document creation restricted for your role.');
+    if (type === 'create-bd') return canManageBD() ? createProposal(data) : toast('BD proposal creation restricted for your role.');
+    if (type === 'edit-bd') return updateProposal(form.dataset.id, data);
+    if (type === 'create-expense') return createExpense(data);
+    if (type === 'create-leave') return createLeave(data);
+    if (type === 'create-campaign') return canManageMarketing() ? createCampaign(data) : toast('Marketing module access restricted.');
+  }
+
+  function doLogin(email, password) {
+    const user = state.db.users.find(u => u.email.toLowerCase() === String(email).toLowerCase() && u.password === password && u.active);
+    if (!user) return toast('Invalid email or password. Check the demo accounts.');
+    resetSessionView();
+    state.user = user;
+    localStorage.setItem(SESSION_KEY, user.email);
+    state.selectedClientId = visibleClients()[0]?.id || null;
+    state.selectedEmployeeId = user.id;
+    addLog('Logged in', 'Auth', user.email, 'Success');
+    render(); toast(`Welcome, ${user.name}`);
+  }
+
+  function normalizeUserData(data) {
+    return {
+      name: cleanText(data.name, 80),
+      email: cleanText(data.email, 120).toLowerCase(),
+      password: String(data.password || PASS).trim().slice(0, 80),
+      role: ROLES.includes(data.role) ? data.role : 'Junior',
+      department: DEPARTMENTS.includes(data.department) ? data.department : state.user.department,
+      title: cleanText(data.title || data.role, 80)
+    };
+  }
+
+  function normalizeTaskData(data) {
+    return {
+      title: cleanText(data.title, 120),
+      clientId: data.clientId || null,
+      department: DEPARTMENTS.includes(data.department) ? data.department : state.user.department,
+      assigneeId: data.assigneeId,
+      reviewerId: data.reviewerId,
+      priority: ['Low','Medium','High'].includes(data.priority) ? data.priority : 'Medium',
+      dueDate: validDate(data.dueDate) ? data.dueDate : todayISO(7),
+      description: cleanText(data.description || 'No description provided.', 500)
+    };
+  }
+
+  function createUser(data) {
+    const d = normalizeUserData(data);
+    if (!d.name || !validEmail(d.email)) return toast('Please enter a valid name and email.');
+    if (d.password.length < 6) return toast('Temporary password must be at least 6 characters.');
+    if (d.role === 'Admin' && state.user.role !== 'Admin') return toast('Only Admin can create Admin accounts.');
+    if (roleLevel(d.role) >= roleLevel(state.user.role) && state.user.role !== 'Admin') return toast('You can only create accounts below your level.');
+    if (state.db.users.some(u => u.email.toLowerCase() === d.email)) return toast('Email already exists in the system.');
+    const u = { id: uid('u'), name: d.name, email: d.email, password: d.password, role: d.role, department: d.department, title: d.title || d.role, active: true, phone: '', skills: ['New Account'], hireDate: data.hireDate || todayISO(), salaryBand: data.salaryBand || 'Band D', notes: '' };
+    state.db.users.push(u);
+    addLog(`Created user ${u.email}`, 'Admin', u.email, 'Success');
+    state.modal = null; save(); render(); toast('User account created successfully.');
+  }
+
+  function createTask(data) {
+    if (!canCreateTask()) return toast('Task creation restricted for your role.');
+    const d = normalizeTaskData(data);
+    if (!d.title) return toast('Task title is required.');
+    const assignee = byId(state.db.users, d.assigneeId);
+    const reviewer = byId(state.db.users, d.reviewerId);
+    if (!assignee || !reviewer) return toast('Choose valid assignee and reviewer.');
+    if (!(canSeeUser(state.user, assignee) || isExecutive())) return toast('You can only assign work inside your visible hierarchy.');
+    if (assignee.id === reviewer.id) return toast('Assignee and reviewer must be different people.');
+    if (roleLevel(reviewer.role) < roleLevel(assignee.role)) return toast('Reviewer must be same or higher hierarchy than assignee.');
+    const t = { id: uid('t'), title: d.title, clientId: d.clientId, department: d.department, assigneeId: d.assigneeId, reviewerId: d.reviewerId, priority: d.priority, status: 'Draft', dueDate: d.dueDate, progress: 8, hours: 0, quality: 75, description: d.description, createdBy: state.user.id, updatedAt: todayISO() };
+    state.db.tasks.push(t);
+    addLog(`Created task: ${t.title}`, 'Workflow', t.id, 'Success');
+    state.modal = null; save(); render(); toast('Task created successfully.');
+  }
+
+  function createClient(data) {
+    if (!canCreateClient()) return toast('Client creation requires Manager level.');
+    const name = cleanText(data.name, 120), industry = cleanText(data.industry, 80), contact = cleanText(data.contact, 80);
+    const email = cleanText(data.email || '', 120);
+    if (!name || !industry || !contact) return toast('Client name, industry, and contact are required.');
+    if (email && !validEmail(email)) return toast('Client email is not valid.');
+    if (!validDate(data.contractEnd)) return toast('Contract end date is not valid.');
+    const c = { id: uid('c'), name, industry, contact, email, phone: cleanText(data.phone || '', 30), status: cleanText(data.status || 'Prospect', 40), leadSource: cleanText(data.leadSource || 'Manual Entry', 40), ownerId: state.user.id, relationshipManagerId: state.user.id, value: canSeeCommercialData() ? safeNumber(data.value, 0, 1000000) : 0, progress: 18, risk: cleanText(data.risk || 'Medium', 30), contractStart: todayISO(), contractEnd: data.contractEnd || todayISO(90), services: ['Business Advisory'], notes: cleanText(data.notes || '', 300) };
+    state.db.clients.push(c);
+    state.selectedClientId = c.id;
+    addLog(`Created client ${c.name}`, 'Client 360', c.id, 'Success');
+    state.modal = null; save(); render(); toast('Client created.');
+  }
+
+  function createProposal(data) {
+    if (!canManageBD()) return toast('BD access restricted for your role.');
+    const client = cleanText(data.client, 100);
+    if (!client) return toast('Client name is required.');
+    const p = { id: uid('p'), client, clientId: null, source: cleanText(data.source || 'Manual', 60), ownerId: data.ownerId || state.user.id, value: safeNumber(data.value, 0, 5000000), stage: BD_STAGES.includes(data.stage) ? data.stage : 'Lead Qualified', probability: safeNumber(data.probability, 0, 100), ageDays: 0, services: (data.services || '').split(',').map(s => s.trim()).filter(Boolean), notes: cleanText(data.notes || '', 300), createdAt: todayISO() };
+    state.db.proposals.push(p);
+    addLog(`Created BD proposal: ${p.client}`, 'BD Pipeline', p.id, 'Success');
+    state.modal = null; save(); render(); toast('Proposal added to pipeline.');
+  }
+
+  function updateProposal(id, data) {
+    const p = byId(state.db.proposals, id);
+    if (!p || !canManageBD()) return toast('BD editing restricted for your role.');
+    const previousStage = p.stage;
+    Object.assign(p, { client: cleanText(data.client, 100), source: cleanText(data.source || p.source, 60), ownerId: data.ownerId || p.ownerId, value: safeNumber(data.value, 0, 5000000), stage: BD_STAGES.includes(data.stage) ? data.stage : p.stage, probability: safeNumber(data.probability, 0, 100), notes: cleanText(data.notes || '', 300) });
+    if (p.stage === 'Contract Signed' && previousStage !== 'Contract Signed') {
+      let client = state.db.clients.find(c => c.name.toLowerCase() === p.client.toLowerCase());
+      if (!client) {
+        client = { id: uid('c'), name: p.client, industry: 'To classify', contact: 'Client contact', email: '', phone: '', status: 'Onboarding', leadSource: p.source, ownerId: state.user.id, relationshipManagerId: p.ownerId || state.user.id, value: p.value, progress: 35, risk: 'Medium', contractStart: todayISO(), contractEnd: todayISO(365), services: p.services?.length ? p.services : ['Business Advisory'], notes: 'Auto-created from BD Contract Signed stage.' };
+        state.db.clients.push(client);
+      } else {
+        client.status = 'Onboarding'; client.value = p.value; client.relationshipManagerId = p.ownerId || client.relationshipManagerId; client.progress = Math.max(client.progress || 0, 35);
+      }
+      p.clientId = client.id;
+      state.db.tasks.push({ id: uid('t'), title: `Client onboarding: ${p.client}`, clientId: client.id, department: 'Business Advisory', assigneeId: p.ownerId || state.user.id, reviewerId: state.user.id, priority: 'High', status: 'Draft', dueDate: todayISO(3), progress: 8, hours: 0, quality: 75, description: 'Auto-created onboarding task after contract was signed in the BD pipeline.', createdBy: state.user.id, updatedAt: todayISO() });
+      addLog(`Auto-created Client 360 and onboarding task for ${p.client}`, 'BD Pipeline', p.id, 'Success');
+    }
+    addLog(`Updated proposal: ${p.client}`, 'BD Pipeline', p.id, 'Success');
+    state.modal = null; save(); render(); toast('Proposal updated.');
+  }
+
+  function createExpense(data) {
+    if (!canManageFinance()) return toast('Finance access restricted for your role.');
+    const desc = cleanText(data.description, 200);
+    if (!desc) return toast('Description is required.');
+    const amount = safeNumber(data.amount, 1, 100000);
+    if (amount < 1) return toast('Amount must be at least €1.');
+    const e = { id: uid('e'), category: EXPENSE_CATS.includes(data.category) ? data.category : 'Other', description: desc, amount, submittedBy: state.user.id, department: DEPARTMENTS.includes(data.department) ? data.department : state.user.department, status: 'Pending', date: validDate(data.date) ? data.date : todayISO(), approverId: data.approverId || 'u_fin', notes: cleanText(data.notes || '', 200) };
+    state.db.expenses.push(e);
+    addLog(`Submitted expense: ${desc}`, 'Finance', e.id, 'Success');
+    state.modal = null; save(); render(); toast('Expense submitted for approval.');
+  }
+
+  function createLeave(data) {
+    if (!canManageHR()) return toast('HR access restricted for your role.');
+    const userId = data.userId || state.user.id;
+    const u = byId(state.db.users, userId);
+    if (!u) return toast('Invalid employee selected.');
+    if (!validDate(data.from) || !validDate(data.to)) return toast('Valid from and to dates are required.');
+    if (data.from > data.to) return toast('From date must be before or equal to To date.');
+    const l = { id: uid('l'), userId, type: LEAVE_TYPES.includes(data.type) ? data.type : 'Annual Leave', from: data.from, to: data.to, status: 'Pending', approverId: data.approverId || state.user.id, notes: cleanText(data.notes || '', 200) };
+    state.db.leaves.push(l);
+    addLog(`Leave request submitted for ${u.name}`, 'HR', l.id, 'Success');
+    state.modal = null; save(); render(); toast('Leave request submitted.');
+  }
+
+  function createCampaign(data) {
+    if (!canManageMarketing()) return toast('Marketing module access restricted.');
+    const name = cleanText(data.name, 120);
+    if (!name) return toast('Campaign name is required.');
+    const c = { id: uid('m'), name, ownerId: data.ownerId || state.user.id, budget: safeNumber(data.budget, 0, 999999), spend: safeNumber(data.spend, 0, 999999), leads: safeNumber(data.leads, 0, 99999), conversions: safeNumber(data.conversions, 0, 99999), status: ['Active','Paused','Completed'].includes(data.status) ? data.status : 'Active' };
+    state.db.campaigns.push(c);
+    addLog(`Created campaign: ${c.name}`, 'Marketing', c.id, 'Success');
+    state.modal = null; save(); render(); toast('Campaign created.');
+  }
+
+  function updateUser(id, data) {
+    const u = byId(state.db.users, id);
+    if (!u || !canEditUser(u)) return toast('You cannot edit this user.');
+    const d = normalizeUserData(data);
+    if (!d.name || !validEmail(d.email)) return toast('Valid name and email are required.');
+    if (d.password.length < 6) return toast('Password must be at least 6 characters.');
+    if (d.role === 'Admin' && state.user.role !== 'Admin') return toast('Only Admin can grant Admin role.');
+    if (roleLevel(d.role) >= roleLevel(state.user.role) && state.user.role !== 'Admin') return toast('You can only assign roles below your level.');
+    if (state.db.users.some(x => x.id !== id && x.email.toLowerCase() === d.email)) return toast('Email already exists.');
+    const oldRole = u.role;
+    Object.assign(u, { name: d.name, email: d.email, password: d.password || u.password, role: d.role, department: d.department, title: d.title || d.role });
+    if (oldRole !== d.role) addLog(`Role changed for ${u.email}: ${oldRole} → ${d.role}`, 'Admin', u.id, 'Success');
+    addLog(`Edited user ${u.email}`, 'Admin', u.id, 'Success');
+    state.modal = null; save(); render(); toast('Employee updated.');
+  }
+
+  function updateTask(id, data) {
+    const t = byId(state.db.tasks, id);
+    if (!t || !canEditTask(t)) return toast('You cannot edit this task.');
+    const d = normalizeTaskData(data);
+    if (!d.title) return toast('Task title is required.');
+    const assignee = byId(state.db.users, d.assigneeId);
+    const reviewer = byId(state.db.users, d.reviewerId);
+    if (!assignee || !reviewer) return toast('Choose valid assignee and reviewer.');
+    if (assignee.id === reviewer.id) return toast('Assignee and reviewer must be different people.');
+    if (roleLevel(reviewer.role) < roleLevel(assignee.role)) return toast('Reviewer must be same or higher hierarchy than assignee.');
+    const allowedStatuses = allowedTaskStatusesForCurrentUser(t);
+    const nextStatus = allowedStatuses.includes(data.status) ? data.status : t.status;
+    if (data.status && data.status !== nextStatus) return toast('Your role cannot set this task to that status.');
+    Object.assign(t, { title: d.title, clientId: d.clientId, department: d.department, assigneeId: d.assigneeId, reviewerId: d.reviewerId, priority: d.priority, dueDate: d.dueDate || t.dueDate, description: d.description || t.description, status: nextStatus });
+    t.progress = completionByStatus(t.status); t.updatedAt = todayISO();
+    addLog(`Edited task: ${t.title}`, 'Workflow', t.id, 'Success');
+    state.modal = null; save(); render(); toast('Task updated.');
+  }
+
+  function updateClient(id, data) {
+    const c = byId(state.db.clients, id);
+    if (!c || !canEditClient(c)) return toast('You cannot edit this client.');
+    const name = cleanText(data.name, 120), industry = cleanText(data.industry, 80), contact = cleanText(data.contact, 80);
+    if (!name || !industry || !contact) return toast('Name, industry, and contact are required.');
+    Object.assign(c, { name, industry, contact, email: cleanText(data.email || '', 120), status: cleanText(data.status || c.status, 40), risk: cleanText(data.risk || c.risk, 30), contractEnd: data.contractEnd || c.contractEnd, notes: cleanText(data.notes || c.notes || '', 300) });
+    if (canSeeCommercialData()) c.value = safeNumber(data.value, 0, 1000000);
+    addLog(`Edited client ${c.name}`, 'Client 360', c.id, 'Success');
+    state.modal = null; save(); render(); toast('Client updated.');
+  }
+
+  function createDoc(data) {
+    if (!canCreateDocument()) return toast('Document creation restricted for your role.');
+    const name = cleanText(data.name, 160);
+    if (!name) return toast('Document name is required.');
+    const docType = DOC_TYPES.includes(data.type) ? data.type : 'General';
+    if (!canCreateSensitiveDocType(docType)) return toast('This document category is restricted for your role.');
+    const attachmentName = fileLabel(data.attachment);
+    const d = { id: uid('d'), name, clientId: data.clientId || null, ownerId: state.user.id, type: docType, version: cleanText(data.version || 'v1.0', 20), status: cleanText(data.status || 'Draft', 40), updatedAt: todayISO(), size: attachmentName ? attachmentName.replace(/^.*\((.*)\)$/, '$1') : cleanText(data.size || '1.0 MB', 20), attachmentName };
+    state.db.documents.push(d);
+    addLog(`Added document ${d.name}`, 'Documents', d.id, 'Success');
+    state.modal = null; save(); render(); toast('Document added.');
+  }
+
+  function advanceTask(id, direction = 1) {
+    const t = byId(state.db.tasks, id); if (!t) return;
+    if (direction > 0 && !canMoveForward(t)) return toast('Cannot move this task forward with your role.');
+    if (direction < 0 && !canMoveBack(t)) return toast('Cannot move this task backward with your role.');
+    const i = statusIndex(t.status);
+    const ni = Math.max(0, Math.min(STATUS.length - 1, i + direction));
+    t.status = STATUS[ni]; t.progress = completionByStatus(t.status); t.updatedAt = todayISO();
+    if (t.status === 'Submitted') t.submittedAt = new Date().toISOString();
+    addLog(`Moved task "${t.title}" to ${t.status}`, 'Workflow', t.id, 'Success');
+    save(); render(); toast(`Task moved to ${t.status}.`);
+  }
+
+  function sendBackTask(id) {
+    const t = byId(state.db.tasks, id); if (!t) return;
+    if (!canApprove(t)) return toast('Only the reviewer or higher hierarchy can send this task back.');
+    t.status = 'In Progress';
+    t.progress = completionByStatus(t.status);
+    t.reviewNote = `Sent back by ${state.user.name} on ${fmtDate(todayISO())}`;
+    t.updatedAt = todayISO();
+    addLog(`Sent back task "${t.title}"`, 'Review Queue', t.id, 'Success');
+    save(); render(); toast('Task sent back for correction.');
+  }
+
+  function approveTask(id) {
+    const t = byId(state.db.tasks, id); if (!t) return;
+    if (!canApprove(t)) return toast('Approval restricted to the reviewer or higher hierarchy.');
+    const canvas = $('#signaturePad');
+    t.status = 'Approved'; t.progress = 95; t.quality = Math.max(Number(t.quality || 80), 86);
+    t.approvedBy = state.user.id; t.approvedAt = new Date().toISOString();
+    t.signature = canvas ? canvas.toDataURL('image/png') : 'signed'; t.fingerprint = true;
+    state.fingerprintOk = false; state.modal = null;
+    addLog(`Digitally approved task "${t.title}"`, 'Workflow', t.id, 'Success');
+    save(); render(); toast('Task approved with digital signature.');
+  }
+
+  function quickFollowupForClient(clientId) {
+    if (!canCreateTask()) return toast('Follow-up task creation restricted for your role.');
+    const c = byId(state.db.clients, clientId); if (!c) return;
+    state.db.tasks.push({ id: uid('t'), title: `Follow up: ${c.name}`, clientId: c.id, department: 'Business Advisory', assigneeId: c.relationshipManagerId || state.user.id, reviewerId: state.user.id, priority: clientRisk(c) >= 65 ? 'High' : 'Medium', status: 'Draft', dueDate: todayISO(3), progress: 8, hours: 0, quality: 75, description: clientNextAction(c, clientRisk(c), 0), updatedAt: todayISO() });
+    addLog(`Created follow-up task for ${c.name}`, 'Client 360', c.id, 'Success');
+    save(); render(); toast('Follow-up task created.');
+  }
+
+  function afterRender() {
+    if (state.modal?.type === 'approve') initSignaturePad();
+    // Copilot chat: Enter to send, Shift+Enter for newline, auto-grow, focus, scroll
+    const ai = $('#aiQuestion');
+    if (ai) {
+      ai.addEventListener('keydown', (ev) => {
+        if (ev.key === 'Enter' && !ev.shiftKey) {
+          ev.preventDefault();
+          const q = ai.value.trim();
+          if (q && !state.aiLoading) runCopilot('', q);
+        }
+      });
+      ai.addEventListener('input', () => {
+        ai.style.height = 'auto';
+        ai.style.height = Math.min(ai.scrollHeight, 160) + 'px';
+      });
+      if (state.route === 'ai' && !state.aiLoading) ai.focus();
+    }
+    const kai = $('#kaiQuestion');
+    if (kai) {
+      kai.addEventListener('keydown', (ev) => {
+        if (ev.key === 'Enter' && !ev.shiftKey) {
+          ev.preventDefault();
+          const q = kai.value.trim();
+          if (q && !state.aiLoading) runCopilot('', q);
+        }
+      });
+      kai.addEventListener('input', () => {
+        kai.style.height = 'auto';
+        kai.style.height = Math.min(kai.scrollHeight, 96) + 'px';
+      });
+    }
+    scrollChat();
+  }
+
+  function initSignaturePad() {
+    const canvas = $('#signaturePad');
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    const ratio = Math.max(window.devicePixelRatio || 1, 1);
+    canvas.width = Math.floor(rect.width * ratio);
+    canvas.height = Math.floor(rect.height * ratio);
+    const ctx = canvas.getContext('2d');
+    ctx.scale(ratio, ratio); ctx.lineWidth = 2.5; ctx.lineCap = 'round'; ctx.strokeStyle = '#0f172a';
+    let drawing = false;
+    const pos = (ev) => { const r = canvas.getBoundingClientRect(); const p = ev.touches ? ev.touches[0] : ev; return { x: p.clientX - r.left, y: p.clientY - r.top }; };
+    const start = ev => { drawing = true; const p = pos(ev); ctx.beginPath(); ctx.moveTo(p.x, p.y); ev.preventDefault(); };
+    const move = ev => { if (!drawing) return; const p = pos(ev); ctx.lineTo(p.x, p.y); ctx.stroke(); ev.preventDefault(); };
+    const end = () => { drawing = false; };
+    canvas.onmousedown = start; canvas.onmousemove = move; canvas.onmouseup = end; canvas.onmouseleave = end;
+    canvas.ontouchstart = start; canvas.ontouchmove = move; canvas.ontouchend = end;
+    ctx.font = '20px cursive'; ctx.fillStyle = '#94a3b8'; ctx.fillText('Sign here with mouse or touch', 18, 80);
+  }
+
+  async function handleClick(e) {
+    // Close notif panel if clicking outside
+    if (state.notifOpen && !e.target.closest('.notif-panel') && !e.target.closest('.notif-btn')) {
+      state.notifOpen = false; render(); return;
+    }
+    // Only close modal when clicking the actual dark backdrop
+    if (e.target && e.target.getAttribute && e.target.getAttribute('data-modal-backdrop') === 'true') {
+      state.modal = null; state.fingerprintOk = false; return render();
+    }
+    const el = e.target.closest('[data-action]');
+    if (!el) return;
+    const action = el.dataset.action;
+    if (action === 'route') { const target = el.dataset.route; if (!hasRouteAccess(target)) { addLog(`Blocked page access: ${target}`, 'Access Control', target, 'Blocked'); return toast('This module is restricted for your role.'); } state.route = target; return render(); }
+    if (action === 'logout') { addLog('Logged out', 'Auth', state.user?.email || '', 'Success'); localStorage.removeItem(SESSION_KEY); state.user = null; resetSessionView(); return render(); }
+    if (action === 'quick-login') return doLogin(el.dataset.email, PASS);
+    if (action === 'toggle-notif') { state.notifOpen = !state.notifOpen; return render(); }
+    if (action === 'open-task-modal') { if (!canCreateTask()) return toast('Only Senior+ can create tasks.'); state.modal = { type: 'task', clientId: el.dataset.client || null }; return render(); }
+    if (action === 'open-client-modal') { if (!canCreateClient()) return toast('Client creation requires Manager+.'); state.modal = { type: 'client' }; return render(); }
+    if (action === 'open-doc-modal') { if (!canCreateDocument()) return toast('Document creation restricted.'); state.modal = { type: 'doc' }; return render(); }
+    if (action === 'open-edit-task') { const t = byId(state.db.tasks, el.dataset.id); if (!canEditTask(t)) return toast('Task editing restricted.'); state.modal = { type: 'edit-task', taskId: el.dataset.id }; return render(); }
+    if (action === 'open-edit-client') { const c = byId(state.db.clients, el.dataset.id); if (!canEditClient(c)) return toast('Client editing restricted.'); state.modal = { type: 'edit-client', clientId: el.dataset.id }; return render(); }
+    if (action === 'open-edit-user') { const u = byId(state.db.users, el.dataset.id); if (!canEditUser(u)) return toast('User editing restricted.'); state.modal = { type: 'edit-user', userId: el.dataset.id }; return render(); }
+    if (action === 'open-bd-modal') { if (!canManageBD()) return toast('BD access restricted.'); state.modal = { type: 'bd' }; return render(); }
+    if (action === 'open-bd-edit') { if (!canManageBD()) return toast('BD access restricted.'); state.modal = { type: 'edit-bd', proposalId: el.dataset.id }; return render(); }
+    if (action === 'open-expense-modal') { if (!canManageFinance()) return toast('Finance access restricted.'); state.modal = { type: 'expense' }; return render(); }
+    if (action === 'open-leave-modal') { if (!canManageHR()) return toast('HR access restricted.'); state.modal = { type: 'leave' }; return render(); }
+    if (action === 'open-campaign-modal') { if (!canManageMarketing()) return toast('Marketing module access restricted.'); state.modal = { type: 'campaign' }; return render(); }
+    if (action === 'delete-campaign') {
+      const c = byId(state.db.campaigns, el.dataset.id);
+      if (c && canManageMarketing()) { state.db.campaigns = state.db.campaigns.filter(x => x.id !== el.dataset.id); addLog(`Archived campaign: ${c.name}`, 'Marketing', c.id, 'Success'); save(); render(); toast('Campaign archived.'); }
+    }
+    if (action === 'delete-proposal') {
+      const p = byId(state.db.proposals, el.dataset.id);
+      if (p && canManageBD()) { state.db.proposals = state.db.proposals.filter(x => x.id !== el.dataset.id); addLog(`Removed proposal: ${p.client}`, 'BD Pipeline', p.id, 'Success'); save(); render(); toast('Proposal removed from pipeline.'); }
+    }
+    if (action === 'close-modal') { state.modal = null; state.fingerprintOk = false; return render(); }
+    if (action === 'select-client') { state.selectedClientId = el.dataset.id; return render(); }
+    if (action === 'select-client-route') { if (!hasRouteAccess('clients')) return toast('Client 360 restricted.'); state.selectedClientId = el.dataset.id; state.route = 'clients'; return render(); }
+    if (action === 'select-employee') { state.selectedEmployeeId = el.dataset.id; state.aiReport = ''; return render(); }
+    if (action === 'advance-task') return advanceTask(el.dataset.id, 1);
+    if (action === 'send-back-task') return sendBackTask(el.dataset.id);
+    if (action === 'back-task') return advanceTask(el.dataset.id, -1);
+    if (action === 'open-approve') { state.modal = { type: 'approve', taskId: el.dataset.id }; state.fingerprintOk = false; return render(); }
+    if (action === 'verify-fingerprint') { state.fingerprintOk = true; render(); return toast('Fingerprint verified.'); }
+    if (action === 'clear-signature') { initSignaturePad(); return; }
+    if (action === 'approve-task') return approveTask(el.dataset.id);
+    if (action === 'create-client-followup') return quickFollowupForClient(el.dataset.id);
+    if (action === 'approve-expense') {
+      const expense = byId(state.db.expenses, el.dataset.id);
+      if (expense) { if (!canManageFinance()) return toast('Expense approval requires Finance access.'); expense.status = 'Approved'; addLog(`Approved expense: ${expense.description}`, 'Finance', expense.id, 'Success'); save(); render(); toast('Expense approved.'); }
+    }
+    if (action === 'proposal-followup') {
+      if (!canCreateTask() || !hasRouteAccess('bd')) return toast('BD follow-up creation restricted.');
+      const p = byId(state.db.proposals, el.dataset.id); if (!p) return;
+      state.db.tasks.push({ id: uid('t'), title: `BD follow-up: ${p.client}`, clientId: null, department: 'Business Advisory', assigneeId: p.ownerId, reviewerId: state.user.id, priority: p.ageDays > 14 ? 'High' : 'Medium', status: 'Draft', dueDate: todayISO(2), progress: 8, hours: 0, quality: 75, description: `Follow up proposal in stage: ${p.stage}. Current probability: ${p.probability}%.`, updatedAt: todayISO() });
+      addLog(`Created BD follow-up for ${p.client}`, 'BD Pipeline', p.id, 'Success'); save(); render(); toast('BD follow-up task created.');
+    }
+    if (action === 'generate-employee-report') { state.aiReport = generateEmployeeReport(el.dataset.id); return render(); }
+    if (action === 'toggle-kai') { state.aiWidgetOpen = !state.aiWidgetOpen; return render(); }
+    if (action === 'kai-suggest') { state.aiWidgetOpen = true; return runCopilot('', el.dataset.text || ''); }
+    if (action === 'ask-kai') { const q = ($('#kaiQuestion')?.value || '').trim(); if (!q) return toast('Type a question first.'); state.aiWidgetOpen = true; return runCopilot('', q); }
+    if (action === 'quick-report') { state.route = 'ai'; render(); return isSeniorLevel() ? runCopilot('summary', '') : runCopilot('taskhelp', ''); }
+    if (action === 'ai-command') { if (!canUseAICommand(el.dataset.command || '')) return toast('AI command restricted for your role.'); return runCopilot(el.dataset.command || '', ''); }
+    if (action === 'ai-suggest') { const txt = el.dataset.text || ''; return runCopilot('', txt); }
+    if (action === 'ask-ai') { const q = ($('#aiQuestion')?.value || '').trim(); if (!q) return toast('Type a question first.'); return runCopilot('', q); }
+    if (action === 'clear-ai') { state.aiChat = []; state.aiReport = ''; state.aiNotice = ''; return render(); }
+    if (action === 'approve-leave') {
+      const l = byId(state.db.leaves, el.dataset.id);
+      if (l) { if (!canManageHR() && l.approverId !== state.user.id) return toast('Leave approval restricted.'); l.status = 'Approved'; addLog(`Approved leave for ${userName(l.userId)}`, 'HR', l.id, 'Success'); save(); render(); toast('Leave approved.'); }
+    }
+    if (action === 'toggle-user') { const u = byId(state.db.users, el.dataset.id); if (u) { u.active = !u.active; addLog(`${u.active ? 'Enabled' : 'Disabled'} user ${u.email}`, 'Admin', u.id, 'Success'); save(); render(); toast('User status updated.'); } }
+    if (action === 'link-resource') { addLog('Linked global resource to engagement', 'Global Hub', el.dataset.id, 'Success'); return toast('Resource linked to engagement.'); }
+    if (action === 'reset-data') { if (!isExecutive()) return toast('Reset is restricted to Admin/Partner.'); localStorage.removeItem(STORE_KEY); state.db = seedData(); state.user = state.db.users.find(u => u.email === localStorage.getItem(SESSION_KEY)) || state.db.users[0]; save(); render(); return toast('Demo data reset to defaults.'); }
+    if (action === 'print-page') return window.print();
+    if (action === 'copy-export') {
+      const area = document.getElementById('exportArea');
+      if (area) { area.select(); document.execCommand('copy'); toast('Export copied to clipboard.'); }
+      else { navigator.clipboard?.writeText(JSON.stringify(isExecutive() ? state.db : { user: state.user.name, role: state.user.role }, null, 2)).then(() => toast('Export copied.')).catch(() => toast('Copy failed — select and copy manually.')); }
+    }
+  }
+
+  function handleInput(e) {
+    const el = e.target.closest('[data-action="filter"]');
+    if (!el) return;
+    state.filters[el.dataset.key] = el.value;
+    render();
+  }
+
+  document.addEventListener('submit', handleSubmit);
+  document.addEventListener('click', handleClick);
+  document.addEventListener('input', handleInput);
+  document.addEventListener('change', handleInput);
+
+  load();
+  render();
+})();

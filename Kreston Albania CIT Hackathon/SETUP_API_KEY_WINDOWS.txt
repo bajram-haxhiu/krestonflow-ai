@@ -1,0 +1,20 @@
+HOW TO USE GEMINI API KEY
+
+1. Open the project folder.
+2. Open the file named .env with Notepad or VS Code.
+3. Paste your key after GEMINI_API_KEY= like this:
+
+GEMINI_API_KEY=your_key_here
+GEMINI_MODEL=gemini-3.5-flash
+PORT=5173
+
+4. Save the file.
+5. Restart the server:
+
+node serve.cjs
+
+IMPORTANT:
+- Do not paste the API key inside app.js or index.html.
+- The browser must never see the API key.
+- Keep .env private.
+- If Gemini fails, the project still works with safe local fallback.

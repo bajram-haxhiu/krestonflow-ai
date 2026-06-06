@@ -1,0 +1,14 @@
+krestonflow-ai-structured-kai-chatbot/
+├─ index.html                 Main browser app shell
+├─ styles.css                 Professional responsive UI + floating KAI chatbot styles
+├─ app.js                     Dynamic CRM/workflow app + role-safe KAI/Copilot logic
+├─ serve.cjs                  Secure Node server + Gemini backend proxy + local fallback
+├─ .env                       Gemini key placeholder
+├─ .env.example               Safe example environment file
+├─ package.json               npm start/dev scripts
+├─ START_WINDOWS.bat          Double-click startup script
+├─ OPEN_DIRECTLY.html         Backup redirect to localhost
+├─ README.md                  Full instructions and demo flow
+├─ TEST_REPORT.md             Checks performed and manual test steps
+├─ SETUP_API_KEY_WINDOWS.txt  Gemini key setup instructions
+└─ assets/                    Asset folder

@@ -1,0 +1,13 @@
+{
+  "name": "krestonflow-ai-gemini-hierarchy-pro",
+  "version": "3.0.0",
+  "description": "KrestonFlow AI - Professional internal CRM, workflow platform, and secure Gemini Copilot demo.",
+  "main": "serve.cjs",
+  "scripts": {
+    "start": "node serve.cjs",
+    "dev": "node serve.cjs"
+  },
+  "keywords": ["crm", "workflow", "copilot", "openai", "hackathon", "kreston"],
+  "author": "Hackathon Demo",
+  "license": "MIT"
+}
