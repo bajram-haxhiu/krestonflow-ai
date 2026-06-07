@@ -81,20 +81,6 @@ Kreston2026!
 
 This project is a functional hackathon MVP, but it is not production-ready yet. A production version should include a real database, secure authentication, backend role validation, real file handling, encrypted storage, and enterprise-level audit controls.
 
-## GitHub Notes
-
-Before uploading this project to GitHub, do not commit:
-
-```text
-.env
-*.bak
-```
-
-Keep only `.env.example` in the repository.
-
-## License
-
-This project is licensed under the MIT License.
 
 ## Disclaimer
 
